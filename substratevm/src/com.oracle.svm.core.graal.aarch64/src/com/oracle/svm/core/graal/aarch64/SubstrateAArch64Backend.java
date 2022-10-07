@@ -37,7 +37,6 @@ import static org.graalvm.compiler.lir.LIRInstruction.OperandFlag.REG;
 import static org.graalvm.compiler.lir.LIRValueUtil.asConstantValue;
 import static org.graalvm.compiler.lir.LIRValueUtil.differentRegisters;
 
-import org.graalvm.compiler.asm.Assembler;
 import org.graalvm.compiler.asm.BranchTargetOutOfBoundsException;
 import org.graalvm.compiler.asm.Label;
 import org.graalvm.compiler.asm.aarch64.AArch64Address;
@@ -57,6 +56,8 @@ import org.graalvm.compiler.core.common.CompilationIdentifier;
 import org.graalvm.compiler.core.common.CompressEncoding;
 import org.graalvm.compiler.core.common.LIRKind;
 import org.graalvm.compiler.core.common.alloc.RegisterAllocationConfig;
+import org.graalvm.compiler.core.common.memory.MemoryExtendKind;
+import org.graalvm.compiler.core.common.memory.MemoryOrderMode;
 import org.graalvm.compiler.core.common.spi.ForeignCallLinkage;
 import org.graalvm.compiler.core.common.spi.LIRKindTool;
 import org.graalvm.compiler.core.gen.DebugInfoBuilder;
@@ -525,7 +526,7 @@ public class SubstrateAArch64Backend extends SubstrateBackend implements LIRGene
             int size = wordKind.getPlatformKind().getSizeInBytes() * Byte.SIZE;
             int codeStartFieldOffset = KnownOffsets.singleton().getImageCodeInfoCodeStartOffset();
             Value codeStartField = AArch64AddressValue.makeAddress(wordKind, size, asAllocatable(codeInfo), codeStartFieldOffset);
-            Value codeStart = getArithmetic().emitLoad(wordKind, codeStartField, null);
+            Value codeStart = getArithmetic().emitLoad(wordKind, codeStartField, null, MemoryOrderMode.PLAIN, MemoryExtendKind.DEFAULT);
             return getArithmetic().emitAdd(codeStart, codeOffsetInImage, false);
         }
 
@@ -629,6 +630,16 @@ public class SubstrateAArch64Backend extends SubstrateBackend implements LIRGene
             }
             append(new AArch64ControlFlow.ReturnOp(operand));
         }
+
+        @Override
+        public int getArrayLengthOffset() {
+            return ConfigurationValues.getObjectLayout().getArrayLengthOffset();
+        }
+
+        @Override
+        public Register getHeapBaseRegister() {
+            return ReservedRegisters.singleton().getHeapBaseRegister();
+        }
     }
 
     public final class SubstrateAArch64NodeLIRBuilder extends AArch64NodeLIRBuilder implements SubstrateNodeLIRBuilder {
@@ -707,6 +718,7 @@ public class SubstrateAArch64Backend extends SubstrateBackend implements LIRGene
 
         @Override
         protected void emitInvoke(LoweredCallTargetNode callTarget, Value[] parameters, LIRFrameState callState, Value result) {
+            verifyCallTarget(callTarget);
             if (callTarget instanceof ComputedIndirectCallTargetNode) {
                 emitComputedIndirectCall((ComputedIndirectCallTargetNode) callTarget, result, parameters, AllocatableValue.NONE, callState);
             } else {
@@ -1117,7 +1129,7 @@ public class SubstrateAArch64Backend extends SubstrateBackend implements LIRGene
 
     @Override
     public CompilationResultBuilder newCompilationResultBuilder(LIRGenerationResult lirGenResult, FrameMap frameMap, CompilationResult compilationResult, CompilationResultBuilderFactory factory) {
-        Assembler masm = new AArch64MacroAssembler(getTarget());
+        AArch64MacroAssembler masm = new AArch64MacroAssembler(getTarget());
         PatchConsumerFactory patchConsumerFactory;
         if (SubstrateUtil.HOSTED) {
             patchConsumerFactory = PatchConsumerFactory.HostedPatchConsumerFactory.factory();

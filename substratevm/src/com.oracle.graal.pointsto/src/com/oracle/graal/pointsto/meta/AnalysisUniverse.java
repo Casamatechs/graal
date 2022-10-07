@@ -56,6 +56,7 @@ import com.oracle.graal.pointsto.infrastructure.WrappedJavaType;
 import com.oracle.graal.pointsto.infrastructure.WrappedSignature;
 import com.oracle.graal.pointsto.meta.AnalysisType.UsageKind;
 import com.oracle.graal.pointsto.util.AnalysisError;
+import com.oracle.graal.pointsto.util.AnalysisFuture;
 
 import jdk.vm.ci.code.BytecodePosition;
 import jdk.vm.ci.common.JVMCIError;
@@ -314,18 +315,6 @@ public class AnalysisUniverse implements Universe {
             assert oldValue == claim;
             claim = null;
 
-            ResolvedJavaType enclosingType = null;
-            try {
-                enclosingType = newValue.getWrapped().getEnclosingType();
-            } catch (LinkageError e) {
-                /* Ignore LinkageError thrown by enclosing type resolution. */
-            }
-            /* If not being currently constructed by this thread. */
-            if (enclosingType != null && !types.containsKey(enclosingType)) {
-                /* Make sure that the enclosing type is also in the universe. */
-                newValue.getEnclosingType();
-            }
-
             return newValue;
 
         } finally {
@@ -378,6 +367,29 @@ public class AnalysisUniverse implements Universe {
             AnalysisType declaringType = lookup(field.getDeclaringClass());
             declaringType.registerAsReachable();
             declaringType.ensureInitialized();
+
+            /*
+             * Ensure that all reachability handler that were present at the time the type was
+             * marked as reachable are executed before creating the field. This allows field value
+             * transformer to be installed reliably in reachability handler.
+             *
+             * This is necessary because field value transformer are currently implemented via
+             * ComputedValueField that are injected into the substitution universe. A
+             * ComputedValueField added after the AnalysisField is created would be ignored. In the
+             * future, we want a better implementation of field value transformer that do not rely
+             * on the substitution universe, then this code can be removed.
+             */
+            List<AnalysisFuture<Void>> notifications = declaringType.scheduledTypeReachableNotifications;
+            if (notifications != null) {
+                for (var notification : notifications) {
+                    notification.ensureDone();
+                }
+                /*
+                 * Now we know all the handlers have been executed, so subsequent field lookups do
+                 * not need to check anymore.
+                 */
+                declaringType.scheduledTypeReachableNotifications = null;
+            }
         }
 
         field = substitutions.lookup(field);
@@ -596,7 +608,7 @@ public class AnalysisUniverse implements Universe {
         }
     }
 
-    private static Set<AnalysisMethod> getMethodImplementations(AnalysisMethod method, boolean includeInlinedMethods) {
+    public static Set<AnalysisMethod> getMethodImplementations(AnalysisMethod method, boolean includeInlinedMethods) {
         Set<AnalysisMethod> implementations = new LinkedHashSet<>();
         if (method.wrapped.canBeStaticallyBound() || method.isConstructor()) {
             if (includeInlinedMethods ? method.isReachable() : method.isImplementationInvoked()) {

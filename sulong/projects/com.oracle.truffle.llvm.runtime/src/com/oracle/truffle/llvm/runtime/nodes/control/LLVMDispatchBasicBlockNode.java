@@ -34,6 +34,7 @@ import com.oracle.truffle.api.CompilerDirectives;
 import com.oracle.truffle.api.TruffleSafepoint;
 import com.oracle.truffle.api.dsl.Specialization;
 import com.oracle.truffle.api.frame.Frame;
+import com.oracle.truffle.api.frame.FrameDescriptor;
 import com.oracle.truffle.api.frame.VirtualFrame;
 import com.oracle.truffle.api.instrumentation.StandardTags;
 import com.oracle.truffle.api.instrumentation.Tag;
@@ -48,6 +49,7 @@ import com.oracle.truffle.llvm.runtime.nodes.api.LLVMExpressionNode;
 import com.oracle.truffle.llvm.runtime.nodes.api.LLVMStatementNode;
 import com.oracle.truffle.llvm.runtime.nodes.base.LLVMBasicBlockNode;
 import com.oracle.truffle.llvm.runtime.nodes.base.LLVMFrameNullerUtil;
+import com.oracle.truffle.llvm.runtime.nodes.func.LLVMCatchSwitchNode;
 import com.oracle.truffle.llvm.runtime.nodes.func.LLVMInvokeNode;
 import com.oracle.truffle.llvm.runtime.nodes.func.LLVMResumeNode;
 import com.oracle.truffle.llvm.runtime.nodes.others.LLVMUnreachableNode;
@@ -105,6 +107,7 @@ public abstract class LLVMDispatchBasicBlockNode extends LLVMExpressionNode impl
                     TruffleSafepoint.poll(this);
                     counters.backEdgeCounter++;
                     if (CompilerDirectives.inInterpreter() && osrMode == SulongEngineOption.OSRMode.BYTECODE && BytecodeOSRNode.pollOSRBackEdge(this)) {
+                        ensureAllFrameSlotsInitialized(frame);
                         returnValue = BytecodeOSRNode.tryOSR(this, basicBlockIndex, counters, null, frame);
                         if (returnValue != null) {
                             break outer;
@@ -115,12 +118,6 @@ public abstract class LLVMDispatchBasicBlockNode extends LLVMExpressionNode impl
                 // iteration
             }
             LLVMBasicBlockNode bb = bodyNodes[basicBlockIndex];
-
-            // lazily insert the basic block into the AST
-            bb.initialize();
-
-            // the newly inserted block may have been instrumented
-            bb = bodyNodes[basicBlockIndex];
 
             // execute all statements
             bb.execute(frame);
@@ -145,6 +142,34 @@ public abstract class LLVMDispatchBasicBlockNode extends LLVMExpressionNode impl
                     basicBlockIndex = conditionalBranchNode.getFalseSuccessor();
                     nullDeadSlots(frame, bodyNodes[basicBlockIndex].nullableBefore);
                     continue outer;
+                }
+            } else if (controlFlowNode instanceof LLVMCatchSwitchNode) {
+                LLVMCatchSwitchNode switchNode = (LLVMCatchSwitchNode) controlFlowNode;
+                Object condition = switchNode.executeCondition(frame);
+                int[] successors = switchNode.getSuccessors();
+                int successorCount = switchNode.getConditionalSuccessorCount();
+                for (int i = 0; i < successorCount; i++) {
+                    if (CompilerDirectives.injectBranchProbability(bb.getBranchProbability(i), switchNode.checkCase(frame, i, condition))) {
+                        bb.enterSuccessor(i);
+                        nullDeadSlots(frame, bb.nullableAfter);
+                        executePhis(frame, switchNode, i);
+                        basicBlockIndex = successors[i];
+                        nullDeadSlots(frame, bodyNodes[basicBlockIndex].nullableBefore);
+                        continue outer;
+                    }
+                }
+
+                if (switchNode.hasDefaultBlock()) {
+                    int i = successors.length - 1;
+                    bb.enterSuccessor(i);
+                    nullDeadSlots(frame, bb.nullableAfter);
+                    executePhis(frame, switchNode, i);
+                    basicBlockIndex = successors[i];
+                    nullDeadSlots(frame, bodyNodes[basicBlockIndex].nullableBefore);
+                } else {
+                    switchNode.throwException(frame);
+                    CompilerDirectives.transferToInterpreterAndInvalidate();
+                    throw new IllegalStateException("must not reach here");
                 }
             } else if (controlFlowNode instanceof LLVMSwitchNode) {
                 LLVMSwitchNode switchNode = (LLVMSwitchNode) controlFlowNode;
@@ -217,6 +242,14 @@ public abstract class LLVMDispatchBasicBlockNode extends LLVMExpressionNode impl
                 basicBlockIndex = unconditionalNode.getSuccessor();
                 nullDeadSlots(frame, bodyNodes[basicBlockIndex].nullableBefore);
                 continue outer;
+            } else if (controlFlowNode instanceof LLVMCatchReturnNode) {
+                LLVMCatchReturnNode unconditionalNode = (LLVMCatchReturnNode) controlFlowNode;
+                unconditionalNode.execute(frame); // required for instrumentation
+                nullDeadSlots(frame, bb.nullableAfter);
+                executePhis(frame, unconditionalNode, 0);
+                basicBlockIndex = unconditionalNode.getSuccessor();
+                nullDeadSlots(frame, bodyNodes[basicBlockIndex].nullableBefore);
+                continue outer;
             } else if (controlFlowNode instanceof LLVMInvokeNode) {
                 LLVMInvokeNode invokeNode = (LLVMInvokeNode) controlFlowNode;
                 try {
@@ -266,6 +299,37 @@ public abstract class LLVMDispatchBasicBlockNode extends LLVMExpressionNode impl
         }
         assert returnValue != null;
         return returnValue;
+    }
+
+    private static void ensureAllFrameSlotsInitialized(VirtualFrame frame) {
+        FrameDescriptor frameDescriptor = frame.getFrameDescriptor();
+        for (int i = 0; i < frameDescriptor.getNumberOfSlots(); i++) {
+            if (frame.getTag(i) == 0 && frameDescriptor.getSlotKind(i).tag != 0) {
+                switch (frameDescriptor.getSlotKind(i)) {
+                    case Object:
+                        frame.setObject(i, null);
+                        break;
+                    case Long:
+                        frame.setLong(i, 0L);
+                        break;
+                    case Int:
+                        frame.setInt(i, 0);
+                        break;
+                    case Double:
+                        frame.setDouble(i, 0d);
+                        break;
+                    case Float:
+                        frame.setFloat(i, 0f);
+                        break;
+                    case Boolean:
+                        frame.setBoolean(i, false);
+                        break;
+                    case Byte:
+                        frame.setByte(i, (byte) 0);
+                        break;
+                }
+            }
+        }
     }
 
     /**
@@ -349,14 +413,6 @@ public abstract class LLVMDispatchBasicBlockNode extends LLVMExpressionNode impl
     @Override
     public void setOSRMetadata(Object osrMetadata) {
         this.osrMetadata = osrMetadata;
-    }
-
-    @Override
-    public void prepareOSR(int target) {
-        // Force initialization to prevent OSR from deoptimizing once it hits new code.
-        for (LLVMBasicBlockNode basicBlock : bodyNodes) {
-            basicBlock.initialize();
-        }
     }
 
     @Override

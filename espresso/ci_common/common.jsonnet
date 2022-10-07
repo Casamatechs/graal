@@ -49,7 +49,7 @@ local benchmark_suites = ['dacapo', 'renaissance', 'scala-dacapo'];
       // for compatibility with macOS High Sierra
       MACOSX_DEPLOYMENT_TARGET: '10.13',
     },
-    capabilities+: ['darwin_mojave'],
+    capabilities+: ['darwin_mojave', 'ram32gb'],
   },
 
   windows: self.common + graal_common.windows_amd64 + {
@@ -203,22 +203,22 @@ local benchmark_suites = ['dacapo', 'renaissance', 'scala-dacapo'];
       timelimit='5:00:00'
     ),
 
-  scala_dacapo_benchmark(env, guest_jvm_config='single-tier', extra_args=[]):
+  scala_dacapo_benchmark(env, guest_jvm_config, extra_args=[]):
     self.espresso_benchmark(
       env,
       self.scala_dacapo_fast,
       guest_jvm_config=guest_jvm_config,
       extra_args=extra_args,
-      timelimit=if std.endsWith(_base_env(env), 'ce') then '7:00:00' else '5:00:00'
+      timelimit=if std.endsWith(_base_env(env), 'ce') then '7:30:00' else '3:00:00'
     ),
 
-  dacapo_benchmark(env, guest_jvm_config='single-tier', extra_args=[]):
+  dacapo_benchmark(env, guest_jvm_config, extra_args=[]):
     self.espresso_benchmark(
       env,
       self.dacapo_stable(env),
       guest_jvm_config=guest_jvm_config,
       extra_args=extra_args,
-      timelimit=if std.endsWith(_base_env(env), 'ce') then '7:00:00' else '5:00:00'
+      timelimit=if std.endsWith(_base_env(env), 'ce') then '7:30:00' else '3:00:00'
     ),
 
 

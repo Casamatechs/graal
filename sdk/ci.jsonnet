@@ -11,18 +11,15 @@
     ],
     targets: ["gate"],
     timelimit: "30:00",
-  },
-
-  local sdk_unittest = {
-    environment+: {
-        "MX_TEST_RESULT_TAGS": "sdk"
+    guard: {
+        includes: ["<graal>/sdk/**", "**.jsonnet"],
     }
   },
 
   builds: [
-    common.linux_amd64  + common.oraclejdk11 + sdk_gate + common.eclipse + common.jdt + sdk_unittest + common.mach5_target,
-    common.linux_amd64  + common.oraclejdk17 + sdk_gate + common.eclipse + common.jdt + sdk_unittest + common.mach5_target,
-    common.darwin_amd64 + common.oraclejdk11 + sdk_gate + sdk_unittest + common.mach5_target,
-    common.darwin_amd64 + common.oraclejdk17 + sdk_gate + sdk_unittest + common.mach5_target,
+    common.linux_amd64  + common.oraclejdk11 + sdk_gate + common.eclipse + common.jdt,
+    common.linux_amd64  + common.oraclejdk17 + sdk_gate + common.eclipse + common.jdt + common.mach5_target,
+    common.darwin_amd64 + common.oraclejdk11 + sdk_gate,
+    common.darwin_amd64 + common.oraclejdk17 + sdk_gate + common.mach5_target,
   ]
 }

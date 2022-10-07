@@ -105,6 +105,7 @@ import org.graalvm.compiler.asm.amd64.AVXKind.AVXSize;
 import org.graalvm.compiler.core.common.LIRKind;
 import org.graalvm.compiler.core.common.NumUtil;
 import org.graalvm.compiler.core.common.calc.FloatConvert;
+import org.graalvm.compiler.core.common.memory.MemoryExtendKind;
 import org.graalvm.compiler.core.common.memory.MemoryOrderMode;
 import org.graalvm.compiler.debug.GraalError;
 import org.graalvm.compiler.lir.ConstantValue;
@@ -1197,7 +1198,12 @@ public class AMD64ArithmeticLIRGenerator extends ArithmeticLIRGenerator implemen
     }
 
     @Override
-    public Variable emitLoad(LIRKind kind, Value address, LIRFrameState state) {
+    public Variable emitLoad(LIRKind kind, Value address, LIRFrameState state, MemoryOrderMode memoryOrder, MemoryExtendKind extendKind) {
+        assert extendKind.isNotExtended();
+        /*
+         * AMD64's consistency model does not require any fences for loads. Volatile store->load
+         * ordering requirements are enforced at the stores.
+         */
         AMD64AddressValue loadAddress = getAMD64LIRGen().asAddressValue(address);
         Variable result = getLIRGen().newVariable(getLIRGen().toRegisterKind(kind));
         switch ((AMD64Kind) kind.getPlatformKind()) {
@@ -1223,29 +1229,6 @@ public class AMD64ArithmeticLIRGenerator extends ArithmeticLIRGenerator implemen
                 throw GraalError.shouldNotReachHere();
         }
         return result;
-    }
-
-    @Override
-    public Variable emitOrderedLoad(LIRKind kind, Value address, LIRFrameState state, MemoryOrderMode memoryOrder) {
-        assert memoryOrder == MemoryOrderMode.OPAQUE || memoryOrder == MemoryOrderMode.ACQUIRE || memoryOrder == MemoryOrderMode.VOLATILE;
-        /*
-         * AMD64's consistency model does not require any fences for loads. Volatile store->load
-         * ordering requirements are enforced at the stores.
-         */
-        return emitLoad(kind, address, state);
-    }
-
-    @Override
-    public void emitOrderedStore(ValueKind<?> kind, Value address, Value input, LIRFrameState state, MemoryOrderMode memoryOrder) {
-        assert memoryOrder == MemoryOrderMode.OPAQUE || memoryOrder == MemoryOrderMode.RELEASE || memoryOrder == MemoryOrderMode.VOLATILE;
-        emitStore(kind, address, input, state);
-        /*
-         * Need a fence after volatile stores to ensure a volatile load cannot execute before this
-         * operation.
-         */
-        if (memoryOrder == MemoryOrderMode.VOLATILE) {
-            getLIRGen().emitMembar(MemoryBarriers.STORE_LOAD);
-        }
     }
 
     protected void emitStoreConst(AMD64Kind kind, AMD64AddressValue address, ConstantValue value, LIRFrameState state) {
@@ -1339,13 +1322,20 @@ public class AMD64ArithmeticLIRGenerator extends ArithmeticLIRGenerator implemen
     }
 
     @Override
-    public void emitStore(ValueKind<?> lirKind, Value address, Value input, LIRFrameState state) {
+    public void emitStore(ValueKind<?> lirKind, Value address, Value input, LIRFrameState state, MemoryOrderMode memoryOrder) {
         AMD64AddressValue storeAddress = getAMD64LIRGen().asAddressValue(address);
         AMD64Kind kind = (AMD64Kind) lirKind.getPlatformKind();
         if (isConstantValue(input)) {
             emitStoreConst(kind, storeAddress, asConstantValue(input), state);
         } else {
             emitStore(kind, storeAddress, asAllocatable(input), state);
+        }
+        /*
+         * Need a fence after volatile stores to ensure a volatile load cannot execute before this
+         * operation.
+         */
+        if (memoryOrder == MemoryOrderMode.VOLATILE) {
+            getLIRGen().emitMembar(MemoryBarriers.STORE_LOAD);
         }
     }
 

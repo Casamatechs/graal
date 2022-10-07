@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012, 2021, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2012, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -29,7 +29,6 @@ import static com.oracle.svm.core.util.VMError.shouldNotReachHere;
 import java.lang.reflect.AccessibleObject;
 import java.lang.reflect.Executable;
 import java.lang.reflect.Field;
-import java.lang.reflect.Method;
 import java.nio.ByteBuffer;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -79,20 +78,21 @@ import com.oracle.svm.core.meta.SubstrateMethodPointerConstant;
 import com.oracle.svm.core.meta.SubstrateObjectConstant;
 import com.oracle.svm.core.option.HostedOptionKey;
 import com.oracle.svm.core.option.HostedOptionValues;
+import com.oracle.svm.core.reflect.target.EncodedReflectionMetadataSupplier;
+import com.oracle.svm.core.sampler.ProfilingSampler;
 import com.oracle.svm.core.util.Counter;
 import com.oracle.svm.core.util.VMError;
 import com.oracle.svm.hosted.NativeImageOptions;
-import com.oracle.svm.hosted.code.CompilationInfo;
-import com.oracle.svm.hosted.code.CompilationInfoSupport;
-import com.oracle.svm.hosted.code.CompilationInfoSupport.DeoptSourceFrameInfo;
 import com.oracle.svm.hosted.code.HostedImageHeapConstantPatch;
+import com.oracle.svm.hosted.code.SubstrateCompilationDirectives;
+import com.oracle.svm.hosted.code.SubstrateCompilationDirectives.DeoptSourceFrameInfo;
 import com.oracle.svm.hosted.image.NativeImage.NativeTextSectionImpl;
 import com.oracle.svm.hosted.meta.HostedField;
 import com.oracle.svm.hosted.meta.HostedMetaAccess;
 import com.oracle.svm.hosted.meta.HostedMethod;
 import com.oracle.svm.hosted.meta.HostedType;
 import com.oracle.svm.hosted.meta.HostedUniverse;
-import com.oracle.svm.hosted.meta.InternalRuntimeReflectionSupport;
+import com.oracle.svm.hosted.reflect.ReflectionHostedSupport;
 
 import jdk.vm.ci.code.BytecodeFrame;
 import jdk.vm.ci.code.site.Call;
@@ -145,6 +145,8 @@ public abstract class NativeImageCodeCache {
 
     public abstract int getCodeCacheSize();
 
+    public abstract int getCodeAreaSize();
+
     public Pair<HostedMethod, CompilationResult> getFirstCompilation() {
         return orderedCompilations.get(0);
     }
@@ -167,7 +169,7 @@ public abstract class NativeImageCodeCache {
         return compilations.get(method);
     }
 
-    public abstract void layoutMethods(DebugContext debug, String imageName, BigBang bb, ForkJoinPool threadPool);
+    public abstract void layoutMethods(DebugContext debug, BigBang bb, ForkJoinPool threadPool);
 
     public void layoutConstants() {
         for (Pair<HostedMethod, CompilationResult> pair : getOrderedCompilations()) {
@@ -188,7 +190,7 @@ public abstract class NativeImageCodeCache {
                 }
             }
         }
-        dataSection.close(HostedOptionValues.singleton());
+        dataSection.close(HostedOptionValues.singleton(), 1);
     }
 
     public void addConstantsToHeap() {
@@ -252,7 +254,7 @@ public abstract class NativeImageCodeCache {
         }
 
         ReflectionMetadataEncoder reflectionMetadataEncoder = ImageSingletons.lookup(ReflectionMetadataEncoderFactory.class).create(encoders);
-        InternalRuntimeReflectionSupport reflectionSupport = ImageSingletons.lookup(InternalRuntimeReflectionSupport.class);
+        ReflectionHostedSupport reflectionSupport = ImageSingletons.lookup(ReflectionHostedSupport.class);
         HostedUniverse hUniverse = imageHeap.getUniverse();
         HostedMetaAccess hMetaAccess = imageHeap.getMetaAccess();
 
@@ -387,7 +389,7 @@ public abstract class NativeImageCodeCache {
 
     private void verifyDeoptEntries(CodeInfo codeInfo) {
         boolean hasError = false;
-        List<Entry<AnalysisMethod, Map<Long, DeoptSourceFrameInfo>>> deoptEntries = new ArrayList<>(CompilationInfoSupport.singleton().getDeoptEntries().entrySet());
+        List<Entry<AnalysisMethod, Map<Long, DeoptSourceFrameInfo>>> deoptEntries = new ArrayList<>(SubstrateCompilationDirectives.singleton().getDeoptEntries().entrySet());
         deoptEntries.sort((e1, e2) -> e1.getKey().format("%H.%n(%p)").compareTo(e2.getKey().format("%H.%n(%p)")));
 
         for (Entry<AnalysisMethod, Map<Long, DeoptSourceFrameInfo>> entry : deoptEntries) {
@@ -408,6 +410,11 @@ public abstract class NativeImageCodeCache {
     private static boolean verifyDeoptEntry(CodeInfo codeInfo, HostedMethod method, Entry<Long, DeoptSourceFrameInfo> sourceFrameInfo) {
         int deoptOffsetInImage = method.getDeoptOffsetInImage();
         long encodedBci = sourceFrameInfo.getKey();
+
+        if (sourceFrameInfo.getValue() == DeoptSourceFrameInfo.INVALID_DEOPT_SOURCE_FRAME) {
+            return error(method, encodedBci, "Incompatible source frames; multiple frames with different sizes of locals, locks, and/or stack values exist");
+        }
+
         if (deoptOffsetInImage <= 0) {
             return error(method, encodedBci, "entry point method not compiled");
         }
@@ -561,11 +568,10 @@ public abstract class NativeImageCodeCache {
         }
 
         @Override
-        protected boolean includeLocalValues(ResolvedJavaMethod method, Infopoint infopoint) {
-            CompilationInfo compilationInfo = ((HostedMethod) method).compilationInfo;
-            BytecodeFrame topFrame = infopoint.debugInfo.frame();
+        protected void recordFrame(ResolvedJavaMethod method, Infopoint infopoint, boolean isDeoptEntry) {
+            super.recordFrame(method, infopoint, isDeoptEntry);
 
-            if (isDeoptEntry(method, infopoint)) {
+            if (isDeoptEntry) {
                 /* Collect number of entry points for later printing of statistics. */
                 if (infopoint instanceof DeoptEntryInfopoint) {
                     numDeoptEntryPoints++;
@@ -574,35 +580,25 @@ public abstract class NativeImageCodeCache {
                 } else {
                     throw shouldNotReachHere();
                 }
-
-                return true;
             }
-            BytecodeFrame rootFrame = topFrame;
-            while (rootFrame.caller() != null) {
-                rootFrame = rootFrame.caller();
-            }
-            assert rootFrame.getMethod().equals(method);
+        }
 
-            boolean isDeoptEntry = compilationInfo.isDeoptEntry(rootFrame.getBCI(), rootFrame.duringCall, rootFrame.rethrowException);
-            if (infopoint instanceof DeoptEntryInfopoint) {
-                assert isDeoptEntry;
-                assert topFrame == rootFrame : "Deoptimization target has inlined frame: " + topFrame;
-
-                numDeoptEntryPoints++;
-                return true;
-
-            }
-
-            if (isDeoptEntry && topFrame.duringCall) {
-                assert infopoint instanceof Call;
-                assert topFrame == rootFrame : "Deoptimization target has inlined frame: " + topFrame;
-
-                numDuringCallEntryPoints++;
+        @Override
+        protected boolean includeLocalValues(ResolvedJavaMethod method, Infopoint infopoint, boolean isDeoptEntry) {
+            if (ImageSingletons.contains(ProfilingSampler.class) && ImageSingletons.lookup(ProfilingSampler.class).isCollectingActive()) {
                 return true;
             }
 
+            if (isDeoptEntry || ((HostedMethod) method).compilationInfo.canDeoptForTesting()) {
+                /*
+                 * Need to restore locals from deoptimization source.
+                 */
+                return true;
+            }
+
+            BytecodeFrame topFrame = infopoint.debugInfo.frame();
             for (BytecodeFrame frame = topFrame; frame != null; frame = frame.caller()) {
-                if (CompilationInfoSupport.singleton().isFrameInformationRequired(frame.getMethod())) {
+                if (SubstrateCompilationDirectives.singleton().isFrameInformationRequired(frame.getMethod())) {
                     /*
                      * Somewhere in the inlining hierarchy is a method for which frame information
                      * was explicitly requested. For simplicity, we output frame information for all
@@ -615,40 +611,47 @@ public abstract class NativeImageCodeCache {
                 }
             }
 
-            if (compilationInfo.canDeoptForTesting()) {
-                return true;
-            }
-
             return false;
         }
 
         @Override
-        protected boolean isDeoptEntry(ResolvedJavaMethod method, Infopoint infopoint) {
-            CompilationInfo compilationInfo = ((HostedMethod) method).compilationInfo;
+        protected boolean isDeoptEntry(ResolvedJavaMethod method, CompilationResult compilation, Infopoint infopoint) {
             BytecodeFrame topFrame = infopoint.debugInfo.frame();
-
             BytecodeFrame rootFrame = topFrame;
             while (rootFrame.caller() != null) {
                 rootFrame = rootFrame.caller();
             }
             assert rootFrame.getMethod().equals(method);
 
-            boolean isDeoptEntry = compilationInfo.isDeoptEntry(rootFrame.getBCI(), rootFrame.duringCall, rootFrame.rethrowException);
-            if (infopoint instanceof DeoptEntryInfopoint) {
-                assert isDeoptEntry;
+            boolean isBciDeoptEntry = ((HostedMethod) method).compilationInfo.isDeoptEntry(rootFrame.getBCI(), rootFrame.duringCall, rootFrame.rethrowException);
+            if (isBciDeoptEntry) {
+                /*
+                 * When an infopoint's bci corresponds to a deoptimization entrypoint, it does not
+                 * necessarily mean that the infopoint itself is for a deoptimization entrypoint.
+                 * This is because the infopoint can also be for present debugging purposes and
+                 * happen to have the same bci. Further checks are needed to determine actual
+                 * deoptimization entrypoints.
+                 */
                 assert topFrame == rootFrame : "Deoptimization target has inlined frame: " + topFrame;
-                return true;
+                if (topFrame.duringCall) {
+                    /*
+                     * During call entrypoints must always be linked to a call.
+                     */
+                    VMError.guarantee(infopoint instanceof Call, String.format("Unexpected infopoint type: %s\nFrame: %s", infopoint, topFrame));
+                    return compilation.isValidCallDeoptimizationState((Call) infopoint);
+                } else {
+                    /*
+                     * Other deoptimization entrypoints correspond to an DeoptEntryOp.
+                     */
+                    return infopoint instanceof DeoptEntryInfopoint;
+                }
             }
-            if (isDeoptEntry && topFrame.duringCall) {
-                assert infopoint instanceof Call;
-                assert topFrame == rootFrame : "Deoptimization target has inlined frame: " + topFrame;
-                return true;
-            }
+
             return false;
         }
     }
 
-    public interface ReflectionMetadataEncoder {
+    public interface ReflectionMetadataEncoder extends EncodedReflectionMetadataSupplier {
         void addClassMetadata(MetaAccessProvider metaAccess, HostedType type, Class<?>[] reflectionClasses);
 
         void addReflectionFieldMetadata(MetaAccessProvider metaAccess, HostedField sharedField, Field reflectField);
@@ -667,15 +670,6 @@ public abstract class NativeImageCodeCache {
 
         void encodeAllAndInstall();
 
-        byte[] getAnnotationsEncoding(AccessibleObject object);
-
-        byte[] getParameterAnnotationsEncoding(Executable object);
-
-        byte[] getAnnotationDefaultEncoding(Method object);
-
-        byte[] getTypeAnnotationsEncoding(AccessibleObject object);
-
-        byte[] getReflectParametersEncoding(Executable object);
     }
 
     public interface ReflectionMetadataEncoderFactory {

@@ -30,7 +30,7 @@ import org.graalvm.nativeimage.IsolateThread;
 import org.graalvm.word.UnsignedWord;
 import org.graalvm.word.WordFactory;
 
-import com.oracle.svm.core.annotate.Uninterruptible;
+import com.oracle.svm.core.Uninterruptible;
 import com.oracle.svm.core.jfr.SubstrateJVM;
 import com.oracle.svm.core.thread.ThreadListener;
 import com.oracle.svm.core.threadlocal.FastThreadLocalFactory;
@@ -105,7 +105,7 @@ class SamplerThreadLocal implements ThreadListener {
 
     @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     public static void setThreadLocalBuffer(SamplerBuffer buffer) {
-        buffer.setOwner(SubstrateJVM.get().getThreadId(CurrentIsolate.getCurrentThread()));
+        buffer.setOwner(SubstrateJVM.getThreadId(CurrentIsolate.getCurrentThread()));
         localBuffer.set(buffer);
     }
 

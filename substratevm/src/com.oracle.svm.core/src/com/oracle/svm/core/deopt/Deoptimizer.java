@@ -47,11 +47,10 @@ import org.graalvm.word.WordBase;
 import org.graalvm.word.WordFactory;
 
 import com.oracle.svm.core.FrameAccess;
+import com.oracle.svm.core.NeverInline;
 import com.oracle.svm.core.ReservedRegisters;
 import com.oracle.svm.core.SubstrateOptions;
-import com.oracle.svm.core.annotate.NeverInline;
-import com.oracle.svm.core.annotate.Specialize;
-import com.oracle.svm.core.annotate.Uninterruptible;
+import com.oracle.svm.core.Uninterruptible;
 import com.oracle.svm.core.code.CodeInfo;
 import com.oracle.svm.core.code.CodeInfoAccess;
 import com.oracle.svm.core.code.CodeInfoQueryResult;
@@ -126,7 +125,7 @@ import jdk.vm.ci.meta.SpeculationLog.SpeculationReason;
  *    |                                |   a method which called it
  *    :     ...                        :
  * </pre>
- *
+ * <p>
  * From now on, the frame of the deoptimized method is no longer valid and the GC will ignore it.
  * Instead the GC will also visit the pointer to the {@link DeoptimizedFrame}. In other words: the
  * frame of the deoptimized method is "replaced" by a single entry, a pointer to
@@ -148,7 +147,7 @@ import jdk.vm.ci.meta.SpeculationLog.SpeculationReason;
  * </ol>
  */
 public final class Deoptimizer {
-
+    private static final int MAX_DEOPTIMIZATION_EVENT_PRINT_LENGTH = 1000;
     private static final RingBuffer<char[]> recentDeoptimizationEvents = new RingBuffer<>();
 
     private static final int actionShift = 0;
@@ -515,7 +514,7 @@ public final class Deoptimizer {
 
         /**
          * Custom prologue: set the stack pointer to the first method parameter.
-         *
+         * <p>
          * Custom epilogue: restore all of the architecture's return registers from the
          * {@link DeoptimizedFrame}.
          */
@@ -597,7 +596,7 @@ public final class Deoptimizer {
     /**
      * Performs the actual stack rewriting. The custom prologue of this method sets the stack
      * pointer to the new value passed in as the first parameter.
-     *
+     * <p>
      * The custom epilogue of this method restores the return value registers from the returned
      * frame handle.
      */
@@ -767,13 +766,19 @@ public final class Deoptimizer {
     }
 
     private static final RingBuffer.Consumer<char[]> deoptEventsConsumer = (context, entry) -> {
-        Log l = (Log) context;
-        for (char c : entry) {
+        Log log = (Log) context;
+        int length = Math.min(entry.length, MAX_DEOPTIMIZATION_EVENT_PRINT_LENGTH);
+        for (int i = 0; i < length; i++) {
+            char c = entry[i];
             if (c == '\n') {
-                l.newline();
+                log.newline();
             } else {
-                l.character(c);
+                log.character(c);
             }
+        }
+
+        if (length < entry.length) {
+            log.string("...").newline();
         }
     };
 
@@ -805,11 +810,22 @@ public final class Deoptimizer {
         targetContentSize += FrameAccess.returnAddressSize();
 
         /* The source and target bytecode frame must match (as they stem from the same BCI). */
-        assert sourceFrame.getNumLocals() == targetFrame.getNumLocals();
-        assert sourceFrame.getNumStack() == targetFrame.getNumStack();
-        assert sourceFrame.getNumLocks() == targetFrame.getNumLocks();
-        assert targetFrame.getVirtualObjects().length == 0;
-        assert sourceFrame.getValueInfos().length >= targetFrame.getValueInfos().length;
+        boolean compatibleState = sourceFrame.getNumLocals() == targetFrame.getNumLocals() &&
+                        sourceFrame.getNumStack() == targetFrame.getNumStack() &&
+                        sourceFrame.getNumLocks() == targetFrame.getNumLocks() &&
+                        targetFrame.getVirtualObjects().length == 0 &&
+                        sourceFrame.getValueInfos().length >= targetFrame.getValueInfos().length;
+        if (!compatibleState) {
+            long encodedBci = targetFrame.getEncodedBci();
+            String message = "Deoptimization is not possible. Please report this error.\n" +
+                            String.format("Location - encodedBci: %s (bci %s) - method: %s\n", encodedBci, FrameInfoDecoder.readableBci(encodedBci), targetFrame.getSourceReference()) +
+                            String.format("Target Frame: numLocals-%s, numStack-%s, numLocks-%s, getValueInfos length-%s, virtual objects length-%s\n", targetFrame.getNumLocals(),
+                                            targetFrame.getNumStack(), targetFrame.getNumLocks(), targetFrame.getValueInfos().length, targetFrame.getVirtualObjects().length) +
+                            String.format("Source Frame: numLocals-%s, numStack-%s, numLocks-%s, getValueInfos length-%s\n", sourceFrame.getNumLocals(), sourceFrame.getNumStack(),
+                                            sourceFrame.getNumLocks(), sourceFrame.getValueInfos().length);
+            throw VMError.shouldNotReachHere(message);
+        }
+
         int numValues = targetFrame.getValueInfos().length;
 
         /*
@@ -1196,7 +1212,6 @@ public final class Deoptimizer {
             }
         }
 
-        /** A constructor. */
         protected TargetContent(int targetContentSize, ByteOrder byteOrder) {
             /* Sanity checks. */
             if (byteOrder != ByteOrder.nativeOrder()) {

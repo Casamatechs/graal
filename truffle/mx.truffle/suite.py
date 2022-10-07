@@ -39,9 +39,9 @@
 # SOFTWARE.
 #
 suite = {
-  "mxversion" : "6.0.1",
+  "mxversion" : "6.5.5",
   "name" : "truffle",
-  "version" : "22.3.0",
+  "version" : "23.0.0",
   "release" : False,
   "groupId" : "org.graalvm.truffle",
   "sourceinprojectwhitelist" : [],
@@ -147,6 +147,18 @@ suite = {
       "sourceUrls": ["https://lafo.ssw.uni-linz.ac.at/pub/graal-external-deps/trufflejson-20220320-src.jar"],
       "sourceSha1" : "d085e808a3ef7549cdb72a20056e5f87469f8d56",
     },
+
+    "VISUALVM-LIB-JFLUID-HEAP" : {
+      "moduleName" : "org.graalvm.visualvm.lib.jfluid.heap",
+      "sha1" : "455ce1a77540b37fa59b8d2920de4cb54fe4d896",
+      "sourceSha1" : "383f3f85e50145605c0585ffb10da480513054df",
+      "maven" : {
+        "groupId" : "org.graalvm.visualvm.modules",
+        "artifactId" : "org-graalvm-visualvm-lib-jfluid-heap",
+        "version" : "2.1.4",
+      },
+    },
+
   },
   "snippetsPattern" : ".*(Snippets|doc-files).*",
   "projects" : {
@@ -168,6 +180,20 @@ suite = {
       "forceJavac" : "true",
       "javaCompliance" : "11+",
       "checkstyleVersion" : "8.36.1",
+      "workingSets" : "API,Truffle",
+    },
+
+    "com.oracle.truffle.api.jdk19" : {
+      "subDir" : "src",
+      "sourceDirs" : ["src"],
+      "dependencies" : [
+      ],
+      "overlayTarget" : "com.oracle.truffle.api",
+      "checkPackagePrefix" : "false",
+      "multiReleaseJarVersion" : "19",
+      "checkstyle" : "com.oracle.truffle.api",
+      "javaCompliance" : "19+",
+      "javaPreviewNeeded": "19",
       "workingSets" : "API,Truffle",
     },
 
@@ -225,6 +251,7 @@ suite = {
         "TRUFFLE_TCK_TESTS",
         "TRUFFLE_API",
         "TRUFFLE_SL",
+        "VISUALVM-LIB-JFLUID-HEAP",
         "mx:JUNIT",
       ],
       "requires" : [
@@ -253,6 +280,23 @@ suite = {
       ],
       "checkstyle": "com.oracle.truffle.api",
       "javaCompliance" : "17+",
+      "annotationProcessors" : ["TRUFFLE_DSL_PROCESSOR"],
+      "workingSets" : "API,Truffle,Test",
+      "jacoco" : "exclude",
+      "testProject" : True,
+    },
+
+    "com.oracle.truffle.api.test.jdk19": {
+      "subDir" : "src",
+      "sourceDirs" : ["src"],
+      "dependencies" : [
+        "com.oracle.truffle.api.test",
+      ],
+      "overlayTarget" : "com.oracle.truffle.api.test",
+      "checkstyle": "com.oracle.truffle.api",
+      "javaCompliance" : "19+",
+      "javaPreviewNeeded": "19",
+      "multiReleaseJarVersion" : "19",
       "annotationProcessors" : ["TRUFFLE_DSL_PROCESSOR"],
       "workingSets" : "API,Truffle,Test",
       "jacoco" : "exclude",
@@ -713,6 +757,7 @@ suite = {
       "sourceDirs" : ["src"],
       "jniHeaders" : True,
       "dependencies" : [
+        "com.oracle.truffle.nfi.api",
         "com.oracle.truffle.nfi.backend.spi",
       ],
       "requires" : [
@@ -810,8 +855,7 @@ suite = {
       "workingSets" : "Truffle",
       "annotationProcessors" : ["TRUFFLE_DSL_PROCESSOR"],
       "javaProperties" : {
-        "native.test.lib" : "<path:TRUFFLE_TEST_NATIVE>/<lib:nativetest>",
-        "native.isolation.test.lib" : "<path:TRUFFLE_TEST_NATIVE>/<lib:isolationtest>"
+        "native.test.path" : "<path:TRUFFLE_TEST_NATIVE>",
       },
       "testProject" : True,
       "jacoco" : "exclude",
@@ -1311,7 +1355,7 @@ suite = {
          "com.oracle.truffle.nfi.test",
          "com.oracle.truffle.api.staticobject.test",
        ],
-       "exclude" : ["mx:HAMCREST", "mx:JUNIT", "mx:JMH_1_21"],
+       "exclude" : ["mx:HAMCREST", "mx:JUNIT", "mx:JMH_1_21", "VISUALVM-LIB-JFLUID-HEAP"],
        "distDependencies" : [
          "TRUFFLE_API",
          "TRUFFLE_SL",

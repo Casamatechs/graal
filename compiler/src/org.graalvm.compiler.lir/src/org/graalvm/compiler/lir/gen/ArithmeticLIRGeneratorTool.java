@@ -26,6 +26,7 @@ package org.graalvm.compiler.lir.gen;
 
 import org.graalvm.compiler.core.common.LIRKind;
 import org.graalvm.compiler.core.common.calc.FloatConvert;
+import org.graalvm.compiler.core.common.memory.MemoryExtendKind;
 import org.graalvm.compiler.core.common.memory.MemoryOrderMode;
 import org.graalvm.compiler.debug.GraalError;
 import org.graalvm.compiler.lir.LIRFrameState;
@@ -105,13 +106,9 @@ public interface ArithmeticLIRGeneratorTool {
 
     Value emitBitScanReverse(Value operand);
 
-    Variable emitLoad(LIRKind kind, Value address, LIRFrameState state);
+    Variable emitLoad(LIRKind kind, Value address, LIRFrameState state, MemoryOrderMode memoryOrder, MemoryExtendKind extendKind);
 
-    Variable emitOrderedLoad(LIRKind kind, Value address, LIRFrameState state, MemoryOrderMode memoryOrder);
-
-    void emitStore(ValueKind<?> kind, Value address, Value input, LIRFrameState state);
-
-    void emitOrderedStore(ValueKind<?> kind, Value address, Value input, LIRFrameState state, MemoryOrderMode memoryOrder);
+    void emitStore(ValueKind<?> kind, Value address, Value input, LIRFrameState state, MemoryOrderMode memoryOrder);
 
     @SuppressWarnings("unused")
     default Value emitFusedMultiplyAdd(Value a, Value b, Value c) {
@@ -155,6 +152,16 @@ public interface ArithmeticLIRGeneratorTool {
 
     @SuppressWarnings("unused")
     default Value emitMathMin(Value x, Value y) {
+        throw GraalError.unimplemented("No specialized implementation available");
+    }
+
+    @SuppressWarnings("unused")
+    default Value emitMathUnsignedMax(Value x, Value y) {
+        throw GraalError.unimplemented("No specialized implementation available");
+    }
+
+    @SuppressWarnings("unused")
+    default Value emitMathUnsignedMin(Value x, Value y) {
         throw GraalError.unimplemented("No specialized implementation available");
     }
 

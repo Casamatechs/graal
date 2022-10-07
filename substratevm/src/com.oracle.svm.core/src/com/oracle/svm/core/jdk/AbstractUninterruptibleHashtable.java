@@ -33,7 +33,7 @@ import org.graalvm.word.UnsignedWord;
 import org.graalvm.word.WordFactory;
 
 import com.oracle.svm.core.UnmanagedMemoryUtil;
-import com.oracle.svm.core.annotate.Uninterruptible;
+import com.oracle.svm.core.Uninterruptible;
 
 /**
  * An uninterruptible hashtable with a fixed size that uses chaining in case of a collision.
@@ -126,7 +126,7 @@ public abstract class AbstractUninterruptibleHashtable implements Uninterruptibl
 
         UninterruptibleEntry entry = get(valueOnStack);
         if (entry.isNonNull()) {
-            return WordFactory.nullPointer();
+            return entry;
         } else {
             return insertEntry(valueOnStack);
         }
