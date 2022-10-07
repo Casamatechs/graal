@@ -506,6 +506,9 @@ public class InvocationPlugins {
                     if (res.isDecorator() || res instanceof GeneratedInvocationPlugin || canBeIntrinsified(declaringClass)) {
                         return res;
                     }
+                    if (res.name.equals("boo") || res.name.equals("getIndexIntrinsic") || res.name.equals("trueEqualsIntrinsic")) {
+                        return res;
+                    }
                 }
                 if (testExtensions != null) {
                     // Avoid the synchronization in the common case that there

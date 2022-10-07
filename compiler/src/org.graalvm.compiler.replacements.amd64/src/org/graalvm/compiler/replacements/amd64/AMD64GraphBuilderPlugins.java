@@ -78,6 +78,7 @@ import org.graalvm.compiler.replacements.StringUTF16CompressNode;
 import org.graalvm.compiler.replacements.StringUTF16Snippets;
 import org.graalvm.compiler.replacements.TargetGraphBuilderPlugins;
 import org.graalvm.compiler.replacements.nodes.ArrayCompareToNode;
+import org.graalvm.compiler.replacements.nodes.ArrayEqualsNode;
 import org.graalvm.compiler.replacements.nodes.BinaryMathIntrinsicNode;
 import org.graalvm.compiler.replacements.nodes.BinaryMathIntrinsicNode.BinaryOperation;
 import org.graalvm.compiler.replacements.nodes.BitCountNode;
@@ -117,6 +118,10 @@ public class AMD64GraphBuilderPlugins implements TargetGraphBuilderPlugins {
                 registerMathPlugins(invocationPlugins, arch, replacements);
                 registerArraysEqualsPlugins(invocationPlugins, replacements);
                 registerStringCodingPlugins(invocationPlugins, replacements);
+                registerJsonPlugins(invocationPlugins, replacements);
+                registerFooPlugins(invocationPlugins, replacements);
+                registerSpecdeserPlugins(invocationPlugins, replacements);
+                registerSpeculativePlugins(invocationPlugins, replacements);
             }
         });
     }
@@ -531,6 +536,90 @@ public class AMD64GraphBuilderPlugins implements TargetGraphBuilderPlugins {
         r.register(new StandardGraphBuilderPlugins.ArrayEqualsInvocationPlugin(JavaKind.Double, double[].class, double[].class));
     }
 
+    private static void registerJsonPlugins(InvocationPlugins plugins, Replacements replacements) {
+        Registration r = new Registration(plugins, "kr.sanchez.specdeser.benchmark.TruffleBenchmark", replacements);
+
+        r.register(new InvocationPlugin("getIndexIntrinsic", InvocationPlugin.Receiver.class, byte[].class, int.class, int.class, int.class) {
+                       @Override
+                       public boolean apply(GraphBuilderContext b, ResolvedJavaMethod targetMethod, Receiver receiver, ValueNode str, ValueNode ch, ValueNode fromIndex, ValueNode max) {
+//                           b.addPush(JavaKind.Int, ConstantNode.forInt(4242));
+                           b.addPush(JavaKind.Int, new ArrayIndexOfNode(JavaKind.Byte, JavaKind.Byte, false, false, str, ConstantNode.forLong(0), max, fromIndex, ch));
+                           return true;
+                       }
+        });
+
+        r.register(new InvocationPlugin("trueEqualsIntrinsic", InvocationPlugin.Receiver.class, byte[].class, byte[].class, int.class) {
+            @Override
+            public boolean apply(GraphBuilderContext b, ResolvedJavaMethod targetMethod, Receiver receiver, ValueNode arrayIn, ValueNode comp, ValueNode length) {
+//                b.addPush(JavaKind.Boolean, ConstantNode.forBoolean(false));
+                b.addPush(JavaKind.Boolean, new ArrayEqualsNode(arrayIn, comp, length, JavaKind.Byte));
+                return true;
+            }
+        });
+    }
+
+    private static void registerFooPlugins(InvocationPlugins plugins, Replacements replacements) {
+        Registration r = new Registration(plugins, "kr.sanchez.specdeser.core.Foo", replacements);
+
+        r.register(new InvocationPlugin("boo", InvocationPlugin.Receiver.class, int.class, int.class) {
+            @Override
+            public boolean apply(GraphBuilderContext b, ResolvedJavaMethod targetMethod, Receiver receiver, ValueNode arg1, ValueNode arg2) {
+                b.push(JavaKind.Int, ConstantNode.forInt(43));
+                return true;
+            }
+        });
+    }
+
+    private static void registerSpecdeserPlugins(InvocationPlugins plugins, Replacements replacements) {
+        Registration r = new Registration(plugins, "kr.sanchez.specdeser.core.Main", replacements);
+
+        r.register(new InvocationPlugin("indexOfConstant", InvocationPlugin.Receiver.class, byte[].class, int.class, int.class) {
+            @Override
+            public boolean apply(GraphBuilderContext b, ResolvedJavaMethod targetMethod, Receiver receiver, ValueNode streamArray, ValueNode inputSize, ValueNode i1) {
+                b.push(JavaKind.Int, ConstantNode.forInt(100));
+                return true;
+            }
+        });
+        r.register(new InvocationPlugin("boo", InvocationPlugin.Receiver.class, int.class) {
+            @Override
+            public boolean apply(GraphBuilderContext b, ResolvedJavaMethod targetMethod, Receiver receiver, ValueNode arg1) {
+                b.push(JavaKind.Int, ConstantNode.forInt(43));
+                return true;
+            }
+        });
+    }
+
+    private static void registerSpeculativePlugins(InvocationPlugins plugins, Replacements replacements) {
+        Registration r = new Registration(plugins, "kr.sanchez.specdeser.core.jakarta.SpeculativeParser", replacements);
+        r.register(new InvocationPlugin("indexOfConstant", InvocationPlugin.Receiver.class, byte[].class, int.class, int.class) {
+            @Override
+            public boolean apply(GraphBuilderContext b, ResolvedJavaMethod targetMethod, Receiver receiver, ValueNode arg) {
+                b.push(JavaKind.Int, ConstantNode.forInt(-1));
+                return true;
+            }
+        });
+        r.register(new InvocationPlugin("indexOfConstant", InvocationPlugin.Receiver.class, byte[].class, int.class, int.class, int.class) {
+            @Override
+            public boolean apply(GraphBuilderContext b, ResolvedJavaMethod targetMethod, Receiver receiver, ValueNode arg) {
+                b.push(JavaKind.Int, ConstantNode.forInt(-2));
+                return true;
+            }
+        });
+        r.register(new InvocationPlugin("indexOfConstant", InvocationPlugin.Receiver.class, byte[].class, int.class, int.class, int.class, int.class) {
+            @Override
+            public boolean apply(GraphBuilderContext b, ResolvedJavaMethod targetMethod, Receiver receiver, ValueNode arg) {
+                b.push(JavaKind.Int, ConstantNode.forInt(-3));
+                return true;
+            }
+        });
+        r.register(new InvocationPlugin("indexOfConstant", InvocationPlugin.Receiver.class, byte[].class, int.class, int.class, int.class, int.class, int.class) {
+            @Override
+            public boolean apply(GraphBuilderContext b, ResolvedJavaMethod targetMethod, Receiver receiver, ValueNode arg) {
+                b.push(JavaKind.Int, ConstantNode.forInt(-4));
+                return true;
+            }
+        });
+    }
     private static void registerStringCodingPlugins(InvocationPlugins plugins, Replacements replacements) {
         Registration r = new Registration(plugins, "java.lang.StringCoding", replacements);
         r.register(new InvocationPlugin("implEncodeISOArray", byte[].class, int.class, byte[].class, int.class, int.class) {

@@ -1828,6 +1828,10 @@ public class BytecodeParser extends CoreProvidersDelegate implements GraphBuilde
 
     protected Invoke appendInvoke(InvokeKind initialInvokeKind, ResolvedJavaMethod initialTargetMethod, ValueNode[] args) {
         ResolvedJavaMethod targetMethod = initialTargetMethod;
+
+//        if (targetMethod.getName().contains("trueEqualsIntrinsic")) {
+//            TTY.println(targetMethod.getName());
+//        }
         InvokeKind invokeKind = initialInvokeKind;
         if (initialInvokeKind.isIndirect()) {
             ResolvedJavaType contextType = this.frameState.getMethod().getDeclaringClass();
