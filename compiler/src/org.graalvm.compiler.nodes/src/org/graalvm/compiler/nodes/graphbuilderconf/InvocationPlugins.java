@@ -509,7 +509,7 @@ public class InvocationPlugins {
                     if (res.isDecorator() || res instanceof GeneratedInvocationPlugin || canBeIntrinsified(declaringClass)) {
                         return res;
                     }
-                    if (res.name.equals("boo") || res.name.equals("getIndexIntrinsic") || res.name.equals("trueEqualsIntrinsic")) {
+                    if (res.name.equals("boo") || res.name.equals("getIndexIntrinsic") || res.name.equals("trueEqualsIntrinsic") || res.name.equals("indexOfConstant")) {
                         return res;
                     }
                 }

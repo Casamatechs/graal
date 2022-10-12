@@ -26,6 +26,7 @@ package org.graalvm.compiler.replacements.amd64;
 
 import static org.graalvm.compiler.lir.gen.LIRGeneratorTool.CharsetName.ASCII;
 import static org.graalvm.compiler.lir.gen.LIRGeneratorTool.CharsetName.ISO_8859_1;
+import static org.graalvm.compiler.nodes.NamedLocationIdentity.getArrayLocation;
 import static org.graalvm.compiler.replacements.nodes.BinaryMathIntrinsicNode.BinaryOperation.POW;
 import static org.graalvm.compiler.replacements.nodes.UnaryMathIntrinsicNode.UnaryOperation.COS;
 import static org.graalvm.compiler.replacements.nodes.UnaryMathIntrinsicNode.UnaryOperation.EXP;
@@ -41,6 +42,7 @@ import org.graalvm.compiler.core.common.GraalOptions;
 import org.graalvm.compiler.core.common.Stride;
 import org.graalvm.compiler.core.common.calc.Condition;
 import org.graalvm.compiler.core.common.memory.MemoryOrderMode;
+import org.graalvm.compiler.debug.GraalError;
 import org.graalvm.compiler.nodes.ComputeObjectAddressNode;
 import org.graalvm.compiler.nodes.ConstantNode;
 import org.graalvm.compiler.nodes.NamedLocationIdentity;
@@ -77,7 +79,6 @@ import org.graalvm.compiler.replacements.StringUTF16CompressNode;
 import org.graalvm.compiler.replacements.StringUTF16Snippets;
 import org.graalvm.compiler.replacements.TargetGraphBuilderPlugins;
 import org.graalvm.compiler.replacements.nodes.ArrayCompareToNode;
-import org.graalvm.compiler.replacements.nodes.ArrayEqualsNode;
 import org.graalvm.compiler.replacements.nodes.ArrayIndexOfNode;
 import org.graalvm.compiler.replacements.nodes.BinaryMathIntrinsicNode;
 import org.graalvm.compiler.replacements.nodes.BinaryMathIntrinsicNode.BinaryOperation;
@@ -98,6 +99,7 @@ import jdk.vm.ci.code.CodeUtil;
 import jdk.vm.ci.meta.JavaKind;
 import jdk.vm.ci.meta.MetaAccessProvider;
 import jdk.vm.ci.meta.ResolvedJavaMethod;
+import org.graalvm.word.LocationIdentity;
 
 public class AMD64GraphBuilderPlugins implements TargetGraphBuilderPlugins {
     @Override
@@ -120,8 +122,8 @@ public class AMD64GraphBuilderPlugins implements TargetGraphBuilderPlugins {
                 registerMathPlugins(invocationPlugins, arch, replacements);
                 registerArraysEqualsPlugins(invocationPlugins, replacements);
                 registerStringCodingPlugins(invocationPlugins, replacements);
-                registerFooPlugins(invocationPlugins, replacements);
-                registerSpecdeserPlugins(invocationPlugins, replacements);
+//                registerFooPlugins(invocationPlugins, replacements);
+//                registerSpecdeserPlugins(invocationPlugins, replacements);
                 registerSpeculativePlugins(invocationPlugins, replacements);
             }
         });
@@ -575,35 +577,65 @@ public class AMD64GraphBuilderPlugins implements TargetGraphBuilderPlugins {
 
     private static void registerSpeculativePlugins(InvocationPlugins plugins, Replacements replacements) {
         Registration r = new Registration(plugins, "kr.sanchez.specdeser.core.jakarta.SpeculativeParser", replacements);
-        r.register(new InvocationPlugin("indexOfConstant", InvocationPlugin.Receiver.class, byte[].class, int.class, int.class) {
+        r.register(new InvocationPlugin.InlineOnlyInvocationPlugin("indexOfConstant", Object.class, byte[].class, long.class, int.class, int.class, boolean.class, int.class, int.class, int.class) {
             @Override
-            public boolean apply(GraphBuilderContext b, ResolvedJavaMethod targetMethod, Receiver receiver, ValueNode arg) {
-                b.push(JavaKind.Int, ConstantNode.forInt(-1));
-                return true;
+            public boolean apply(GraphBuilderContext b, ResolvedJavaMethod targetMethod, Receiver receiver, ValueNode location,
+                                 ValueNode array, ValueNode offset, ValueNode length, ValueNode stride, ValueNode isNative, ValueNode fromIndex, ValueNode v0, ValueNode v1) {
+                return applyIndexOf(b, true, false, array, offset, length, stride, isNative, fromIndex, v0, v1);
             }
         });
-        r.register(new InvocationPlugin("indexOfConstant", InvocationPlugin.Receiver.class, byte[].class, int.class, int.class, int.class) {
-            @Override
-            public boolean apply(GraphBuilderContext b, ResolvedJavaMethod targetMethod, Receiver receiver, ValueNode arg) {
-                b.push(JavaKind.Int, ConstantNode.forInt(-2));
-                return true;
-            }
-        });
-        r.register(new InvocationPlugin("indexOfConstant", InvocationPlugin.Receiver.class, byte[].class, int.class, int.class, int.class, int.class) {
-            @Override
-            public boolean apply(GraphBuilderContext b, ResolvedJavaMethod targetMethod, Receiver receiver, ValueNode arg) {
-                b.push(JavaKind.Int, ConstantNode.forInt(-3));
-                return true;
-            }
-        });
-        r.register(new InvocationPlugin("indexOfConstant", InvocationPlugin.Receiver.class, byte[].class, int.class, int.class, int.class, int.class, int.class) {
-            @Override
-            public boolean apply(GraphBuilderContext b, ResolvedJavaMethod targetMethod, Receiver receiver, ValueNode arg) {
-                b.push(JavaKind.Int, ConstantNode.forInt(-4));
-                return true;
-            }
-        });
+//        r.register(new InvocationPlugin("indexOfConstant", InvocationPlugin.Receiver.class, byte[].class, int.class, int.class, int.class, int.class) {
+//            @Override
+//            public boolean apply(GraphBuilderContext b, ResolvedJavaMethod targetMethod, Receiver receiver, ValueNode input, ValueNode startPos, ValueNode inputSize, ValueNode i1, ValueNode i2) {
+//                return applyIndexOfConsecutive(b, true, false, input, ConstantNode.forLong(0), inputSize, startPos, i1, i2);
+////                b.push(JavaKind.Int, new ArrayIndexOfNode(Stride.S1, true, false, null, LocationIdentity.any(), input, 0, inputSize, startPos, i1, i2));
+////                return true;
+//            }
+//        });
+//        r.register(new InvocationPlugin("indexOfConstant", InvocationPlugin.Receiver.class, byte[].class, int.class, int.class, int.class, int.class) {
+//            @Override
+//            public boolean apply(GraphBuilderContext b, ResolvedJavaMethod targetMethod, Receiver receiver, ValueNode input, ValueNode startPos, ValueNode i1, ValueNode i2, ValueNode i3) {
+//                b.push(JavaKind.Int, ConstantNode.forInt(-30));
+//                return true;
+//            }
+//        });
+//        r.register(new InvocationPlugin("indexOfConstant", InvocationPlugin.Receiver.class, byte[].class, int.class, int.class, int.class, int.class, int.class) {
+//            @Override
+//            public boolean apply(GraphBuilderContext b, ResolvedJavaMethod targetMethod, Receiver receiver, ValueNode input, ValueNode startPos, ValueNode i1, ValueNode i2, ValueNode i3, ValueNode i4) {
+//                b.push(JavaKind.Int, ConstantNode.forInt(-40));
+//                return true;
+//            }
+//        });
     }
+
+    public static boolean applyIndexOf(GraphBuilderContext b, boolean findTwoConsecutive, boolean withMask,
+                                       ValueNode array, ValueNode offset, ValueNode length, ValueNode stride, ValueNode isNative, ValueNode fromIndex, ValueNode... values) {
+        Stride constStride = constantStrideParam(stride);
+        LocationIdentity locationIdentity = inferLocationIdentity(isNative);
+        b.addPush(JavaKind.Int, new ArrayIndexOfNode(constStride, findTwoConsecutive, withMask, null, locationIdentity, array, offset, length, fromIndex, values));
+        return true;
+    }
+
+    public static Stride constantStrideParam(ValueNode param) {
+        if (!param.isJavaConstant()) {
+            throw GraalError.shouldNotReachHere();
+        }
+        // TruffleString stores strides in log2
+        return Stride.fromLog2(param.asJavaConstant().asInt());
+    }
+
+    public static LocationIdentity inferLocationIdentity(ValueNode isNative) {
+        if (isNative.isJavaConstant()) {
+            return asBoolean(isNative) ? NamedLocationIdentity.OFF_HEAP_LOCATION : getArrayLocation(JavaKind.Byte);
+        }
+        return LocationIdentity.any();
+    }
+
+    private static boolean asBoolean(ValueNode param) {
+        // using asInt here because a boolean's stack kind can be int
+        return param.asJavaConstant().asInt() != 0;
+    }
+
     private static void registerStringCodingPlugins(InvocationPlugins plugins, Replacements replacements) {
         Registration r = new Registration(plugins, "java.lang.StringCoding", replacements);
         r.register(new InvocationPlugin("implEncodeISOArray", byte[].class, int.class, byte[].class, int.class, int.class) {
