@@ -38,6 +38,9 @@ public final class GraalOptions {
     @Option(help = "Use compiler intrinsifications.", type = OptionType.Debug)
     public static final OptionKey<Boolean> Intrinsify = new OptionKey<>(true);
 
+    @Option(help = "Rewrite signed comparisons to unsigned ones if the result is equal.", type = OptionType.Debug)
+    public static final OptionKey<Boolean> PreferUnsignedComparison = new OptionKey<>(true);
+
     @Option(help = "Perform early global value numbering.", type = OptionType.Debug)
     public static final OptionKey<Boolean> EarlyGVN = new OptionKey<>(true);
 
@@ -149,9 +152,6 @@ public final class GraalOptions {
 
     @Option(help = "", type = OptionType.Debug)
     public static final OptionKey<Boolean> VerifyPhases = new OptionKey<>(false);
-
-    @Option(help = "Verifies that the phase plan respects the phase ordering constraints.", type = OptionType.Debug)
-    public static final OptionKey<Boolean> VerifyPhasePlan = new OptionKey<>(false);
 
     // Debug settings:
     @Option(help = "Start tracing compiled GC barriers after N garbage collections (disabled if N <= 0).", type = OptionType.Debug)

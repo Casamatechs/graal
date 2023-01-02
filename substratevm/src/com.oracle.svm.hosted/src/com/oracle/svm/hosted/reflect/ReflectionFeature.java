@@ -39,9 +39,11 @@ import org.graalvm.compiler.api.replacements.SnippetReflectionProvider;
 import org.graalvm.compiler.nodes.graphbuilderconf.GraphBuilderConfiguration.Plugins;
 import org.graalvm.compiler.phases.util.Providers;
 import org.graalvm.compiler.serviceprovider.JavaVersionUtil;
+import org.graalvm.nativeimage.AnnotationAccess;
 import org.graalvm.nativeimage.ImageSingletons;
 import org.graalvm.nativeimage.c.function.CFunctionPointer;
 import org.graalvm.nativeimage.hosted.RuntimeReflection;
+import org.graalvm.nativeimage.impl.AnnotationExtractor;
 import org.graalvm.nativeimage.impl.RuntimeReflectionSupport;
 
 import com.oracle.graal.pointsto.meta.AnalysisMethod;
@@ -72,15 +74,13 @@ import com.oracle.svm.hosted.FeatureImpl.BeforeCompilationAccessImpl;
 import com.oracle.svm.hosted.FeatureImpl.DuringSetupAccessImpl;
 import com.oracle.svm.hosted.ImageClassLoader;
 import com.oracle.svm.hosted.analysis.Inflation;
-import com.oracle.svm.hosted.annotation.SubstrateAnnotationExtracter;
+import com.oracle.svm.hosted.annotation.SubstrateAnnotationExtractor;
 import com.oracle.svm.hosted.code.FactoryMethodSupport;
 import com.oracle.svm.hosted.config.ConfigurationParserUtils;
 import com.oracle.svm.hosted.meta.HostedField;
 import com.oracle.svm.hosted.meta.HostedMetaAccess;
 import com.oracle.svm.hosted.snippets.ReflectionPlugins;
 import com.oracle.svm.hosted.substitute.AnnotationSubstitutionProcessor;
-import com.oracle.svm.util.AnnotationExtracter;
-import com.oracle.svm.util.GuardedAnnotationAccess;
 import com.oracle.svm.util.ModuleSupport;
 import com.oracle.svm.util.ReflectionUtil;
 
@@ -249,7 +249,7 @@ public class ReflectionFeature implements InternalFeature, ReflectionSubstitutio
 
         ImageSingletons.add(ReflectionSubstitutionSupport.class, this);
 
-        reflectionData = new ReflectionDataBuilder((SubstrateAnnotationExtracter) ImageSingletons.lookup(AnnotationExtracter.class));
+        reflectionData = new ReflectionDataBuilder((SubstrateAnnotationExtractor) ImageSingletons.lookup(AnnotationExtractor.class));
         ImageSingletons.add(RuntimeReflectionSupport.class, reflectionData);
         ImageSingletons.add(ReflectionHostedSupport.class, reflectionData);
     }
@@ -258,6 +258,7 @@ public class ReflectionFeature implements InternalFeature, ReflectionSubstitutio
     public void duringSetup(DuringSetupAccess a) {
         DuringSetupAccessImpl access = (DuringSetupAccessImpl) a;
         aUniverse = access.getUniverse();
+        reflectionData.duringSetup(access.getMetaAccess(), aUniverse);
 
         ReflectionConfigurationParser<ConditionalElement<Class<?>>> parser = ConfigurationParserUtils.create(reflectionData, access.getImageClassLoader());
         loadedConfigurations = ConfigurationParserUtils.parseAndRegisterConfigurations(parser, access.getImageClassLoader(), "reflection",
@@ -271,18 +272,23 @@ public class ReflectionFeature implements InternalFeature, ReflectionSubstitutio
     @Override
     public void beforeAnalysis(BeforeAnalysisAccess access) {
         analysisAccess = (FeatureImpl.BeforeAnalysisAccessImpl) access;
+        reflectionData.beforeAnalysis(analysisAccess);
         /* duplicated to reduce the number of analysis iterations */
         reflectionData.flushConditionalConfiguration(access);
+
+        /*
+         * This has to be registered before registering methods below since this causes the analysis
+         * to see SubstrateMethodAccessor.vtableOffset before we register the transformer.
+         */
+        access.registerFieldValueTransformer(ReflectionUtil.lookupField(SubstrateMethodAccessor.class, "vtableOffset"), new ComputeVTableOffset());
+
         /* Make sure array classes don't need to be registered for reflection. */
         RuntimeReflection.register(Object[].class.getMethods());
-
-        access.registerFieldValueTransformer(ReflectionUtil.lookupField(SubstrateMethodAccessor.class, "vtableOffset"), new ComputeVTableOffset());
     }
 
     @Override
     public void duringAnalysis(DuringAnalysisAccess access) {
         reflectionData.flushConditionalConfiguration(access);
-        reflectionData.duringAnalysis(access);
     }
 
     @Override
@@ -321,7 +327,7 @@ public class ReflectionFeature implements InternalFeature, ReflectionSubstitutio
     @Override
     public String getDeletionReason(Field reflectionField) {
         ResolvedJavaField field = hMetaAccess.lookupJavaField(reflectionField);
-        Delete annotation = GuardedAnnotationAccess.getAnnotation(field, Delete.class);
+        Delete annotation = AnnotationAccess.getAnnotation(field, Delete.class);
         return annotation != null ? annotation.value() : null;
     }
 

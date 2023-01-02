@@ -58,8 +58,10 @@ import org.graalvm.compiler.core.common.LIRKind;
 import org.graalvm.compiler.core.common.alloc.RegisterAllocationConfig;
 import org.graalvm.compiler.core.common.memory.MemoryExtendKind;
 import org.graalvm.compiler.core.common.memory.MemoryOrderMode;
+import org.graalvm.compiler.core.common.spi.ForeignCallDescriptor;
 import org.graalvm.compiler.core.common.spi.ForeignCallLinkage;
 import org.graalvm.compiler.core.common.spi.LIRKindTool;
+import org.graalvm.compiler.core.common.type.CompressibleConstant;
 import org.graalvm.compiler.core.gen.DebugInfoBuilder;
 import org.graalvm.compiler.core.gen.LIRGenerationProvider;
 import org.graalvm.compiler.core.gen.NodeLIRBuilder;
@@ -106,6 +108,7 @@ import org.graalvm.compiler.nodes.NodeView;
 import org.graalvm.compiler.nodes.ParameterNode;
 import org.graalvm.compiler.nodes.SafepointNode;
 import org.graalvm.compiler.nodes.StructuredGraph;
+import org.graalvm.compiler.nodes.ValueNode;
 import org.graalvm.compiler.nodes.spi.CoreProviders;
 import org.graalvm.compiler.nodes.spi.NodeLIRBuilderTool;
 import org.graalvm.compiler.nodes.spi.NodeValueMap;
@@ -113,6 +116,7 @@ import org.graalvm.compiler.options.OptionValues;
 import org.graalvm.compiler.phases.BasePhase;
 import org.graalvm.compiler.phases.common.AddressLoweringByUsePhase;
 import org.graalvm.compiler.phases.util.Providers;
+import org.graalvm.nativeimage.AnnotationAccess;
 import org.graalvm.nativeimage.ImageSingletons;
 
 import com.oracle.svm.core.FrameAccess;
@@ -148,6 +152,7 @@ import com.oracle.svm.core.meta.SharedMethod;
 import com.oracle.svm.core.meta.SubstrateMethodPointerConstant;
 import com.oracle.svm.core.meta.SubstrateObjectConstant;
 import com.oracle.svm.core.nodes.SafepointCheckNode;
+import com.oracle.svm.core.snippets.SubstrateForeignCallTarget;
 import com.oracle.svm.core.thread.VMThreads.StatusSupport;
 import com.oracle.svm.core.util.VMError;
 
@@ -788,6 +793,17 @@ public class SubstrateAArch64Backend extends SubstrateBackend implements LIRGene
         public Variable emitReadReturnAddress() {
             return getLIRGeneratorTool().emitMove(StackSlot.get(getLIRGeneratorTool().getLIRKind(FrameAccess.getWordStamp()), -FrameAccess.returnAddressSize(), true));
         }
+
+        @Override
+        public ForeignCallLinkage lookupGraalStub(ValueNode valueNode, ForeignCallDescriptor foreignCallDescriptor) {
+            ResolvedJavaMethod method = valueNode.graph().method();
+            if (method != null && AnnotationAccess.getAnnotation(method, SubstrateForeignCallTarget.class) != null) {
+                // Emit assembly for snippet stubs
+                return null;
+            }
+            // Assume the SVM ForeignCallSignature are identical to the Graal ones.
+            return gen.getForeignCalls().lookupForeignCall(foreignCallDescriptor);
+        }
     }
 
     protected static class SubstrateAArch64FrameContext implements FrameContext {
@@ -1031,8 +1047,8 @@ public class SubstrateAArch64Backend extends SubstrateBackend implements LIRGene
         public AArch64LIRInstruction createLoad(AllocatableValue dst, Constant src) {
             if (CompressedNullConstant.COMPRESSED_NULL.equals(src)) {
                 return super.createLoad(dst, getZeroConstant(dst));
-            } else if (src instanceof SubstrateObjectConstant) {
-                return loadObjectConstant(dst, (SubstrateObjectConstant) src);
+            } else if (src instanceof CompressibleConstant) {
+                return loadObjectConstant(dst, (CompressibleConstant) src);
             } else if (src instanceof SubstrateMethodPointerConstant) {
                 return new AArch64LoadMethodPointerConstantOp(dst, (SubstrateMethodPointerConstant) src);
             }
@@ -1043,15 +1059,15 @@ public class SubstrateAArch64Backend extends SubstrateBackend implements LIRGene
         public LIRInstruction createStackLoad(AllocatableValue dst, Constant src) {
             if (CompressedNullConstant.COMPRESSED_NULL.equals(src)) {
                 return super.createStackLoad(dst, getZeroConstant(dst));
-            } else if (src instanceof SubstrateObjectConstant) {
-                return loadObjectConstant(dst, (SubstrateObjectConstant) src);
+            } else if (src instanceof CompressibleConstant) {
+                return loadObjectConstant(dst, (CompressibleConstant) src);
             } else if (src instanceof SubstrateMethodPointerConstant) {
                 return new AArch64LoadMethodPointerConstantOp(dst, (SubstrateMethodPointerConstant) src);
             }
             return super.createStackLoad(dst, src);
         }
 
-        protected AArch64LIRInstruction loadObjectConstant(AllocatableValue dst, SubstrateObjectConstant constant) {
+        protected AArch64LIRInstruction loadObjectConstant(AllocatableValue dst, CompressibleConstant constant) {
             if (ReferenceAccess.singleton().haveCompressedReferences()) {
                 RegisterValue heapBase = ReservedRegisters.singleton().getHeapBaseRegister().asValue();
                 return new LoadCompressedObjectConstantOp(dst, constant, heapBase, getCompressEncoding(), lirKindTool);
@@ -1073,14 +1089,14 @@ public class SubstrateAArch64Backend extends SubstrateBackend implements LIRGene
     public static final class LoadCompressedObjectConstantOp extends PointerCompressionOp implements LoadConstantOp {
         public static final LIRInstructionClass<LoadCompressedObjectConstantOp> TYPE = LIRInstructionClass.create(LoadCompressedObjectConstantOp.class);
 
-        static JavaConstant asCompressed(SubstrateObjectConstant constant) {
+        static Constant asCompressed(CompressibleConstant constant) {
             // We only want compressed references in code
             return constant.isCompressed() ? constant : constant.compress();
         }
 
-        private final SubstrateObjectConstant constant;
+        private final CompressibleConstant constant;
 
-        public LoadCompressedObjectConstantOp(AllocatableValue result, SubstrateObjectConstant constant, AllocatableValue baseRegister, CompressEncoding encoding, LIRKindTool lirKindTool) {
+        public LoadCompressedObjectConstantOp(AllocatableValue result, CompressibleConstant constant, AllocatableValue baseRegister, CompressEncoding encoding, LIRKindTool lirKindTool) {
             super(TYPE, result, new ConstantValue(lirKindTool.getNarrowOopKind(), asCompressed(constant)), baseRegister, encoding, true, lirKindTool);
             this.constant = constant;
         }
@@ -1254,11 +1270,17 @@ public class SubstrateAArch64Backend extends SubstrateBackend implements LIRGene
         } catch (BranchTargetOutOfBoundsException e) {
             // A branch estimation was wrong, now retry with conservative label ranges, this
             // should always work
+            resetForEmittingCode(crb);
             crb.setConservativeLabelRanges();
             crb.resetForEmittingCode();
             lir.resetLabels();
             crb.emit(lir);
         }
+    }
+
+    @SuppressWarnings("unused")
+    protected void resetForEmittingCode(CompilationResultBuilder crb) {
+
     }
 
     @Override

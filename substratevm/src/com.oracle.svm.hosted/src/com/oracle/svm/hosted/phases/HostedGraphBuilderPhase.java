@@ -30,7 +30,6 @@ import org.graalvm.compiler.java.FrameStateBuilder;
 import org.graalvm.compiler.java.GraphBuilderPhase;
 import org.graalvm.compiler.nodes.CallTargetNode.InvokeKind;
 import org.graalvm.compiler.nodes.FixedWithNextNode;
-import org.graalvm.compiler.nodes.GraphState.GuardsStage;
 import org.graalvm.compiler.nodes.StructuredGraph;
 import org.graalvm.compiler.nodes.ValueNode;
 import org.graalvm.compiler.nodes.graphbuilderconf.GraphBuilderConfiguration;
@@ -83,20 +82,11 @@ class HostedBytecodeParser extends SubstrateBytecodeParser {
     }
 
     @Override
-    protected boolean asyncExceptionLiveness() {
-        /*
-         * Only methods which can deoptimize need to consider live locals from asynchronous
-         * exception handlers.
-         */
-        return isDeoptimizationEnabled() && getMethod().canDeoptimize();
-    }
-
-    @Override
     protected void build(FixedWithNextNode startInstruction, FrameStateBuilder startFrameState) {
         super.build(startInstruction, startFrameState);
 
         /* We never have floating guards in AOT compiled code. */
-        getGraph().getGraphState().setGuardsStage(GuardsStage.FIXED_DEOPTS);
+        getGraph().getGraphState().configureExplicitExceptionsNoDeopt();
 
         assert !getMethod().isEntryPoint() : "Cannot directly use as entry point, create a call stub ";
     }

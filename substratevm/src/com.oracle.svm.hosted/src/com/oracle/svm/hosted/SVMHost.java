@@ -52,7 +52,6 @@ import org.graalvm.compiler.core.common.spi.ForeignCallsProvider;
 import org.graalvm.compiler.debug.MethodFilter;
 import org.graalvm.compiler.graph.Node;
 import org.graalvm.compiler.java.GraphBuilderPhase.Instance;
-import org.graalvm.compiler.nodes.GraphState;
 import org.graalvm.compiler.nodes.StaticDeoptimizingNode;
 import org.graalvm.compiler.nodes.StructuredGraph;
 import org.graalvm.compiler.nodes.ValueNode;
@@ -66,14 +65,18 @@ import org.graalvm.compiler.phases.OptimisticOptimizations;
 import org.graalvm.compiler.phases.common.BoxNodeIdentityPhase;
 import org.graalvm.compiler.phases.common.CanonicalizerPhase;
 import org.graalvm.compiler.virtual.phases.ea.PartialEscapePhase;
+import org.graalvm.nativeimage.AnnotationAccess;
+import org.graalvm.nativeimage.ImageSingletons;
 import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.Platforms;
 import org.graalvm.nativeimage.c.function.RelocatedPointer;
 
 import com.oracle.graal.pointsto.BigBang;
+import com.oracle.graal.pointsto.PointsToAnalysis;
 import com.oracle.graal.pointsto.api.HostVM;
 import com.oracle.graal.pointsto.constraints.UnsupportedFeatureException;
 import com.oracle.graal.pointsto.infrastructure.OriginalClassProvider;
+import com.oracle.graal.pointsto.infrastructure.UniverseMetaAccess;
 import com.oracle.graal.pointsto.meta.AnalysisField;
 import com.oracle.graal.pointsto.meta.AnalysisMethod;
 import com.oracle.graal.pointsto.meta.AnalysisType;
@@ -81,6 +84,7 @@ import com.oracle.graal.pointsto.meta.AnalysisUniverse;
 import com.oracle.graal.pointsto.meta.HostedProviders;
 import com.oracle.graal.pointsto.phases.InlineBeforeAnalysisPolicy;
 import com.oracle.graal.pointsto.util.GraalAccess;
+import com.oracle.svm.common.meta.MultiMethod;
 import com.oracle.svm.core.BuildPhaseProvider;
 import com.oracle.svm.core.NeverInline;
 import com.oracle.svm.core.NeverInlineTrivial;
@@ -102,6 +106,8 @@ import com.oracle.svm.core.hub.DynamicHub;
 import com.oracle.svm.core.hub.HubType;
 import com.oracle.svm.core.hub.ReferenceType;
 import com.oracle.svm.core.jdk.ClassLoaderSupport;
+import com.oracle.svm.core.jdk.InternalVMMethod;
+import com.oracle.svm.core.jdk.LambdaFormHiddenMethod;
 import com.oracle.svm.core.jdk.RecordSupport;
 import com.oracle.svm.core.jdk.SealedClassSupport;
 import com.oracle.svm.core.option.HostedOptionKey;
@@ -109,20 +115,23 @@ import com.oracle.svm.core.option.SubstrateOptionsParser;
 import com.oracle.svm.core.thread.Continuation;
 import com.oracle.svm.core.util.HostedStringDeduplication;
 import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.hosted.analysis.SVMParsingSupport;
+import com.oracle.svm.hosted.classinitialization.ClassInitializationOptions;
 import com.oracle.svm.hosted.classinitialization.ClassInitializationSupport;
 import com.oracle.svm.hosted.code.InliningUtilities;
 import com.oracle.svm.hosted.code.UninterruptibleAnnotationChecker;
 import com.oracle.svm.hosted.heap.PodSupport;
+import com.oracle.svm.hosted.meta.HostedField;
 import com.oracle.svm.hosted.meta.HostedType;
 import com.oracle.svm.hosted.meta.HostedUniverse;
 import com.oracle.svm.hosted.phases.AnalysisGraphBuilderPhase;
 import com.oracle.svm.hosted.phases.ImplicitAssertionsPhase;
 import com.oracle.svm.hosted.phases.InlineBeforeAnalysisPolicyImpl;
 import com.oracle.svm.hosted.substitute.UnsafeAutomaticSubstitutionProcessor;
-import com.oracle.svm.util.GuardedAnnotationAccess;
 import com.oracle.svm.util.ReflectionUtil;
 
 import jdk.vm.ci.meta.DeoptimizationReason;
+import jdk.vm.ci.meta.JavaConstant;
 import jdk.vm.ci.meta.ResolvedJavaField;
 import jdk.vm.ci.meta.ResolvedJavaMethod;
 import jdk.vm.ci.meta.ResolvedJavaType;
@@ -153,6 +162,8 @@ public class SVMHost extends HostVM {
     private final ConcurrentMap<AnalysisMethod, Boolean> classInitializerSideEffect = new ConcurrentHashMap<>();
     private final ConcurrentMap<AnalysisMethod, Set<AnalysisType>> initializedClasses = new ConcurrentHashMap<>();
     private final ConcurrentMap<AnalysisMethod, Boolean> analysisTrivialMethods = new ConcurrentHashMap<>();
+
+    private final Set<AnalysisField> finalFieldsInitializedOutsideOfConstructor = ConcurrentHashMap.newKeySet();
 
     public SVMHost(OptionValues options, ClassLoader classLoader, ClassInitializationSupport classInitializationSupport,
                     UnsafeAutomaticSubstitutionProcessor automaticSubstitutions, Platform platform, SnippetReflectionProvider originalSnippetReflection) {
@@ -216,7 +227,7 @@ public class SVMHost extends HostVM {
 
     @Override
     public Instance createGraphBuilderPhase(HostedProviders providers, GraphBuilderConfiguration graphBuilderConfig, OptimisticOptimizations optimisticOpts, IntrinsicContext initialIntrinsicContext) {
-        return new AnalysisGraphBuilderPhase(providers, graphBuilderConfig, optimisticOpts, initialIntrinsicContext, providers.getWordTypes());
+        return new AnalysisGraphBuilderPhase(providers, graphBuilderConfig, optimisticOpts, initialIntrinsicContext, providers.getWordTypes(), this);
     }
 
     @Override
@@ -225,8 +236,8 @@ public class SVMHost extends HostVM {
     }
 
     @Override
-    public boolean isRelocatedPointer(Object originalObject) {
-        return originalObject instanceof RelocatedPointer;
+    public boolean isRelocatedPointer(UniverseMetaAccess metaAccess, JavaConstant constant) {
+        return metaAccess.isInstanceOf(constant, RelocatedPointer.class);
     }
 
     @Override
@@ -302,9 +313,8 @@ public class SVMHost extends HostVM {
 
     @Override
     public GraphBuilderConfiguration updateGraphBuilderConfiguration(GraphBuilderConfiguration config, AnalysisMethod method) {
-        return config.withRetainLocalVariables(retainLocalVariables())
-                        .withUnresolvedIsError(linkAtBuildTimeSupport.linkAtBuildTime(method.getDeclaringClass()))
-                        .withFullInfopoints(SubstrateOptions.getSourceLevelDebug() && SubstrateOptions.getSourceLevelDebugFilter().test(method.getDeclaringClass().toJavaName()));
+        return config.withRetainLocalVariables(retainLocalVariables()).withUnresolvedIsError(linkAtBuildTimeSupport.linkAtBuildTime(method.getDeclaringClass())).withFullInfopoints(
+                        SubstrateOptions.getSourceLevelDebug() && SubstrateOptions.getSourceLevelDebugFilter().test(method.getDeclaringClass().toJavaName()));
     }
 
     private boolean retainLocalVariables() {
@@ -394,10 +404,12 @@ public class SVMHost extends HostVM {
         boolean isRecord = RecordSupport.singleton().isRecord(javaClass);
         boolean assertionStatus = RuntimeAssertionsSupport.singleton().desiredAssertionStatus(javaClass);
         boolean isSealed = SealedClassSupport.singleton().isSealed(javaClass);
+        boolean isVMInternal = type.isAnnotationPresent(InternalVMMethod.class);
+        boolean isLambdaFormHidden = type.isAnnotationPresent(LambdaFormHiddenMethod.class);
 
-        final DynamicHub dynamicHub = new DynamicHub(javaClass, className, computeHubType(type), computeReferenceType(type),
-                        superHub, componentHub, sourceFileName, modifiers, hubClassLoader, isHidden, isRecord, nestHost, assertionStatus,
-                        type.hasDefaultMethods(), type.declaresDefaultMethods(), isSealed, simpleBinaryName, getDeclaringClass(javaClass));
+        final DynamicHub dynamicHub = new DynamicHub(javaClass, className, computeHubType(type), computeReferenceType(type), superHub, componentHub, sourceFileName, modifiers, hubClassLoader,
+                        isHidden, isRecord, nestHost, assertionStatus, type.hasDefaultMethods(), type.declaresDefaultMethods(), isSealed, isVMInternal, isLambdaFormHidden, simpleBinaryName,
+                        getDeclaringClass(javaClass));
         ModuleAccess.extractAndSetModule(dynamicHub, javaClass);
         return dynamicHub;
     }
@@ -522,13 +534,13 @@ public class SVMHost extends HostVM {
     @Override
     public void methodAfterParsingHook(BigBang bb, AnalysisMethod method, StructuredGraph graph) {
         if (graph != null) {
-            graph.getGraphState().setGuardsStage(GraphState.GuardsStage.FIXED_DEOPTS);
+            graph.getGraphState().configureExplicitExceptionsNoDeoptIfNecessary();
 
             if (parseOnce) {
                 new ImplicitAssertionsPhase().apply(graph, bb.getProviders());
                 UninterruptibleAnnotationChecker.checkAfterParsing(method, graph);
 
-                optimizeAfterParsing(bb, graph);
+                optimizeAfterParsing(bb, method, graph);
                 /*
                  * Do a complete Canonicalizer run once before graph encoding, to clean up any
                  * leftover uncanonicalized nodes.
@@ -540,9 +552,14 @@ public class SVMHost extends HostVM {
         }
     }
 
-    protected void optimizeAfterParsing(BigBang bb, StructuredGraph graph) {
-        new BoxNodeIdentityPhase().apply(graph, bb.getProviders());
-        new PartialEscapePhase(false, false, CanonicalizerPhase.create(), null, options).apply(graph, bb.getProviders());
+    protected void optimizeAfterParsing(BigBang bb, AnalysisMethod method, StructuredGraph graph) {
+        if (!method.isDeoptTarget()) {
+            /*
+             * Deoptimization Targets cannot have virtual objects in frame states.
+             */
+            new BoxNodeIdentityPhase().apply(graph, bb.getProviders());
+            new PartialEscapePhase(false, false, CanonicalizerPhase.create(), null, options).apply(graph, bb.getProviders());
+        }
     }
 
     @Override
@@ -676,7 +693,7 @@ public class SVMHost extends HostVM {
 
     @Override
     public boolean hasNeverInlineDirective(ResolvedJavaMethod method) {
-        if (GuardedAnnotationAccess.isAnnotationPresent(method, NeverInline.class)) {
+        if (AnnotationAccess.isAnnotationPresent(method, NeverInline.class)) {
             return true;
         }
 
@@ -690,8 +707,15 @@ public class SVMHost extends HostVM {
     private final InlineBeforeAnalysisPolicy<?> inlineBeforeAnalysisPolicy = new InlineBeforeAnalysisPolicyImpl(this);
 
     @Override
-    public InlineBeforeAnalysisPolicy<?> inlineBeforeAnalysisPolicy() {
-        return inlineBeforeAnalysisPolicy;
+    public InlineBeforeAnalysisPolicy<?> inlineBeforeAnalysisPolicy(MultiMethod.MultiMethodKey multiMethodKey) {
+        /*
+         * Currently we only allow inlining before analysis in the original methods.
+         */
+        if (multiMethodKey == MultiMethod.ORIGINAL_METHOD) {
+            return inlineBeforeAnalysisPolicy;
+        } else {
+            return InlineBeforeAnalysisPolicy.NO_INLINING;
+        }
     }
 
     public static class Options {
@@ -733,7 +757,7 @@ public class SVMHost extends HostVM {
             }
         }
 
-        Platforms platformsAnnotation = GuardedAnnotationAccess.getAnnotation(element, Platforms.class);
+        Platforms platformsAnnotation = AnnotationAccess.getAnnotation(element, Platforms.class);
         if (platform == null || platformsAnnotation == null) {
             return true;
         }
@@ -752,7 +776,7 @@ public class SVMHost extends HostVM {
     }
 
     public boolean neverInlineTrivial(AnalysisMethod caller, AnalysisMethod callee) {
-        if (!callee.canBeInlined() || GuardedAnnotationAccess.isAnnotationPresent(callee, NeverInlineTrivial.class)) {
+        if (!callee.canBeInlined() || AnnotationAccess.isAnnotationPresent(callee, NeverInlineTrivial.class)) {
             return true;
         }
         for (var handler : neverInlineTrivialHandlers) {
@@ -768,5 +792,81 @@ public class SVMHost extends HostVM {
         return (Comparator<ResolvedJavaType>) (o1, o2) -> {
             return HostedUniverse.TYPE_COMPARATOR.compare((HostedType) o1, (HostedType) o2);
         };
+    }
+
+    /**
+     * According to the Java VM specification, final instance fields are only allowed to be written
+     * in a constructor. But some compilers violate the spec, notably the Scala compiler. This means
+     * final fields of image heap objects can be modified at image run time, and constant folding
+     * such fields at image build time would fold in the wrong value. As a workaround, we record
+     * which final instance fields are written outside of a constructor, and disable constant
+     * folding for those fields.
+     *
+     * Note that there can be races: A constant folding can happen during bytecode parsing before
+     * the store was recorded. Currently, we do not encounter that problem because constant folding
+     * only happens after static analysis. But there would not be a good solution other than
+     * aborting the image build, because a constant folding cannot be reversed.
+     */
+    public void recordFieldStore(ResolvedJavaField field, ResolvedJavaMethod method) {
+        if (!field.isStatic() && field.isFinal() && (!method.isConstructor() || !field.getDeclaringClass().equals(method.getDeclaringClass()))) {
+            AnalysisField aField = field instanceof HostedField ? ((HostedField) field).getWrapped() : (AnalysisField) field;
+            finalFieldsInitializedOutsideOfConstructor.add(aField);
+        }
+    }
+
+    public boolean preventConstantFolding(ResolvedJavaField field) {
+        AnalysisField aField = field instanceof HostedField ? ((HostedField) field).getWrapped() : (AnalysisField) field;
+        return finalFieldsInitializedOutsideOfConstructor.contains(aField);
+    }
+
+    @Override
+    public Object parseGraph(BigBang bb, AnalysisMethod method) {
+        if (ImageSingletons.contains(SVMParsingSupport.class)) {
+            return ImageSingletons.lookup(SVMParsingSupport.class).parseGraph(bb, method);
+        } else {
+            return super.parseGraph(bb, method);
+        }
+    }
+
+    @Override
+    public boolean validateGraph(PointsToAnalysis bb, StructuredGraph graph) {
+        if (ImageSingletons.contains(SVMParsingSupport.class)) {
+            return ImageSingletons.lookup(SVMParsingSupport.class).validateGraph(bb, graph);
+        } else {
+            return super.validateGraph(bb, graph);
+        }
+    }
+
+    @Override
+    public StructuredGraph.AllowAssumptions allowAssumptions(AnalysisMethod method) {
+        if (ImageSingletons.contains(SVMParsingSupport.class)) {
+            if (ImageSingletons.lookup(SVMParsingSupport.class).allowAssumptions(method)) {
+                return StructuredGraph.AllowAssumptions.YES;
+            }
+        }
+        return super.allowAssumptions(method);
+    }
+
+    @Override
+    public MultiMethodAnalysisPolicy getMultiMethodAnalysisPolicy() {
+        if (ImageSingletons.contains(MultiMethodAnalysisPolicy.class)) {
+            return ImageSingletons.lookup(MultiMethodAnalysisPolicy.class);
+        } else {
+            return super.getMultiMethodAnalysisPolicy();
+        }
+    }
+
+    @Override
+    public boolean ignoreInstanceOfTypeDisallowed() {
+        if (ClassInitializationOptions.AllowDeprecatedInitializeAllClassesAtBuildTime.getValue()) {
+            /*
+             * Compatibility mode for Helidon MP: It initializes all classes at build time, and
+             * relies on the side effect of a class initializer of a class that is only used in an
+             * instanceof. See https://github.com/oracle/graal/pull/5224#issuecomment-1279586997 for
+             * details.
+             */
+            return true;
+        }
+        return super.ignoreInstanceOfTypeDisallowed();
     }
 }

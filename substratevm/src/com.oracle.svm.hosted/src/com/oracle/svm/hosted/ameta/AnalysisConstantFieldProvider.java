@@ -42,14 +42,12 @@ import jdk.vm.ci.meta.ResolvedJavaField;
 @Platforms(Platform.HOSTED_ONLY.class)
 public class AnalysisConstantFieldProvider extends SharedConstantFieldProvider {
     private final AnalysisUniverse universe;
-    private final AnalysisMetaAccess metaAccess;
     private final AnalysisConstantReflectionProvider constantReflection;
 
     public AnalysisConstantFieldProvider(AnalysisUniverse universe, AnalysisMetaAccess metaAccess, AnalysisConstantReflectionProvider constantReflection,
                     ClassInitializationSupport classInitializationSupport) {
-        super(metaAccess, classInitializationSupport);
+        super(metaAccess, classInitializationSupport, (SVMHost) universe.hostVM());
         this.universe = universe;
-        this.metaAccess = metaAccess;
         this.constantReflection = constantReflection;
     }
 
@@ -65,7 +63,7 @@ public class AnalysisConstantFieldProvider extends SharedConstantFieldProvider {
             if (readableField.allowConstantFolding() && readableField.isValueAvailable()) {
                 JavaConstant fieldValue = readableField.readValue(metaAccess, universe.toHosted(analysisTool.getReceiver()));
                 if (fieldValue != null) {
-                    foldedValue = analysisTool.foldConstant(constantReflection.interceptValue(f, universe.lookup(fieldValue)));
+                    foldedValue = analysisTool.foldConstant(constantReflection.interceptValue(metaAccess, f, universe.lookup(fieldValue)));
                 }
             }
         } else {
@@ -74,9 +72,14 @@ public class AnalysisConstantFieldProvider extends SharedConstantFieldProvider {
 
         if (foldedValue != null) {
             if (!BuildPhaseProvider.isAnalysisFinished()) {
-                f.markFolded();
+                f.registerAsFolded(nonNullReason(analysisTool.getReason()));
             }
         }
         return foldedValue;
     }
+
+    public static Object nonNullReason(Object reason) {
+        return reason == null ? "Unknown constant fold location." : reason;
+    }
+
 }

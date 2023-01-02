@@ -74,13 +74,15 @@ import com.oracle.svm.core.OS;
 import com.oracle.svm.core.SubstrateOptions;
 import com.oracle.svm.core.VM;
 import com.oracle.svm.core.code.CodeInfoTable;
+import com.oracle.svm.core.feature.AutomaticallyRegisteredFeature;
 import com.oracle.svm.core.feature.InternalFeature;
 import com.oracle.svm.core.heap.Heap;
+import com.oracle.svm.core.hub.ClassForNameSupport;
 import com.oracle.svm.core.jdk.Resources;
 import com.oracle.svm.core.jdk.resources.ResourceStorageEntry;
+import com.oracle.svm.core.meta.SubstrateObjectConstant;
 import com.oracle.svm.core.option.HostedOptionValues;
 import com.oracle.svm.core.reflect.ReflectionMetadataDecoder;
-import com.oracle.svm.core.feature.AutomaticallyRegisteredFeature;
 import com.oracle.svm.core.util.VMError;
 import com.oracle.svm.hosted.ProgressReporterJsonHelper.AnalysisResults;
 import com.oracle.svm.hosted.ProgressReporterJsonHelper.GeneralInfo;
@@ -91,9 +93,13 @@ import com.oracle.svm.hosted.c.codegen.CCompilerInvoker;
 import com.oracle.svm.hosted.code.CompileQueue.CompileTask;
 import com.oracle.svm.hosted.image.AbstractImage.NativeImageKind;
 import com.oracle.svm.hosted.image.NativeImageHeap.ObjectInfo;
+import com.oracle.svm.hosted.meta.HostedMetaAccess;
 import com.oracle.svm.hosted.reflect.ReflectionHostedSupport;
+import com.oracle.svm.hosted.util.VMErrorReporter;
 import com.oracle.svm.util.ImageBuildStatistics;
 import com.oracle.svm.util.ReflectionUtil;
+
+import jdk.vm.ci.meta.JavaConstant;
 
 public class ProgressReporter {
     private static final int CHARACTERS_PER_LINE;
@@ -113,6 +119,7 @@ public class ProgressReporter {
 
     private final ProgressReporterJsonHelper jsonHelper;
     private final DirectPrinter linePrinter = new DirectPrinter();
+    private final StringBuilder buildOutputLog = new StringBuilder();
     private final StagePrinter<?> stagePrinter;
     private final ColorStrategy colorStrategy;
     private final LinkStrategy linkStrategy;
@@ -133,6 +140,10 @@ public class ProgressReporter {
     private boolean creationStageEndCompleted = false;
     private boolean reportStringBytes = true;
 
+    /**
+     * Build stages displayed as part of the Native Image build output. Changing this enum may
+     * require updating the doc entries for each stage in the BuildOutput.md.
+     */
     private enum BuildStage {
         INITIALIZING("Initializing"),
         ANALYSIS("Performing analysis", true, false),
@@ -140,6 +151,7 @@ public class ProgressReporter {
         PARSING("Parsing methods", true, true),
         INLINING("Inlining methods", true, false),
         COMPILING("Compiling methods", true, true),
+        LAYOUTING("Layouting methods", true, true),
         CREATING("Creating image");
 
         private static final int NUM_STAGES = values().length;
@@ -317,27 +329,39 @@ public class ProgressReporter {
     }
 
     public ReporterClosable printAnalysis(AnalysisUniverse universe, Collection<String> libraries) {
-        Timer timer = getTimer(TimerCollection.Registry.ANALYSIS);
+        return print(TimerCollection.Registry.ANALYSIS, BuildStage.ANALYSIS, () -> printAnalysisStatistics(universe, libraries));
+    }
+
+    private ReporterClosable print(TimerCollection.Registry registry, BuildStage buildStage) {
+        return print(registry, buildStage, null);
+    }
+
+    private ReporterClosable print(TimerCollection.Registry registry, BuildStage buildStage, Runnable extraPrint) {
+        Timer timer = getTimer(registry);
         timer.start();
-        stagePrinter.start(BuildStage.ANALYSIS);
+        stagePrinter.start(buildStage);
         return new ReporterClosable() {
             @Override
             public void closeAction() {
                 timer.stop();
                 stagePrinter.end(timer);
-                printAnalysisStatistics(universe, libraries);
+                if (extraPrint != null) {
+                    extraPrint.run();
+                }
             }
         };
     }
 
     private void printAnalysisStatistics(AnalysisUniverse universe, Collection<String> libraries) {
         String actualVsTotalFormat = "%,8d (%5.2f%%) of %,6d";
-        long reachableClasses = universe.getTypes().stream().filter(t -> t.isReachable()).count();
-        long totalClasses = universe.getTypes().size();
-        recordJsonMetric(AnalysisResults.CLASS_TOTAL, totalClasses);
-        recordJsonMetric(AnalysisResults.CLASS_REACHABLE, reachableClasses);
-        l().a(actualVsTotalFormat, reachableClasses, reachableClasses / (double) totalClasses * 100, totalClasses)
-                        .a(" classes ").doclink("reachable", "#glossary-reachability").println();
+        long reachableTypes = universe.getTypes().stream().filter(t -> t.isReachable()).count();
+        long totalTypes = universe.getTypes().size();
+        recordJsonMetric(AnalysisResults.TYPES_TOTAL, totalTypes);
+        recordJsonMetric(AnalysisResults.DEPRECATED_CLASS_TOTAL, totalTypes);
+        recordJsonMetric(AnalysisResults.TYPES_REACHABLE, reachableTypes);
+        recordJsonMetric(AnalysisResults.DEPRECATED_CLASS_REACHABLE, reachableTypes);
+        l().a(actualVsTotalFormat, reachableTypes, reachableTypes / (double) totalTypes * 100, totalTypes)
+                        .a(" types ").doclink("reachable", "#glossary-reachability").println();
         Collection<AnalysisField> fields = universe.getFields();
         long reachableFields = fields.stream().filter(f -> f.isAccessed()).count();
         int totalFields = fields.size();
@@ -357,21 +381,23 @@ public class ProgressReporter {
             l().a(actualVsTotalFormat, numRuntimeCompiledMethods, numRuntimeCompiledMethods / (double) totalMethods * 100, totalMethods)
                             .a(" methods included for ").doclink("runtime compilation", "#glossary-runtime-methods").println();
         }
-        String classesFieldsMethodFormat = "%,8d classes, %,5d fields, and %,5d methods ";
+        String typesFieldsMethodFormat = "%,8d types, %,5d fields, and %,5d methods ";
+        int reflectClassesCount = ClassForNameSupport.count();
         ReflectionHostedSupport rs = ImageSingletons.lookup(ReflectionHostedSupport.class);
-        int reflectClassesCount = rs.getReflectionClassesCount();
         int reflectFieldsCount = rs.getReflectionFieldsCount();
         int reflectMethodsCount = rs.getReflectionMethodsCount();
         recordJsonMetric(AnalysisResults.METHOD_REFLECT, reflectMethodsCount);
-        recordJsonMetric(AnalysisResults.CLASS_REFLECT, reflectClassesCount);
+        recordJsonMetric(AnalysisResults.TYPES_REFLECT, reflectClassesCount);
+        recordJsonMetric(AnalysisResults.DEPRECATED_CLASS_REFLECT, reflectClassesCount);
         recordJsonMetric(AnalysisResults.FIELD_REFLECT, reflectFieldsCount);
-        l().a(classesFieldsMethodFormat, reflectClassesCount, reflectFieldsCount, reflectMethodsCount)
+        l().a(typesFieldsMethodFormat, reflectClassesCount, reflectFieldsCount, reflectMethodsCount)
                         .doclink("registered for reflection", "#glossary-reflection-registrations").println();
         recordJsonMetric(AnalysisResults.METHOD_JNI, (numJNIMethods >= 0 ? numJNIMethods : UNAVAILABLE_METRIC));
-        recordJsonMetric(AnalysisResults.CLASS_JNI, (numJNIClasses >= 0 ? numJNIClasses : UNAVAILABLE_METRIC));
+        recordJsonMetric(AnalysisResults.TYPES_JNI, (numJNIClasses >= 0 ? numJNIClasses : UNAVAILABLE_METRIC));
+        recordJsonMetric(AnalysisResults.DEPRECATED_CLASS_JNI, (numJNIClasses >= 0 ? numJNIClasses : UNAVAILABLE_METRIC));
         recordJsonMetric(AnalysisResults.FIELD_JNI, (numJNIFields >= 0 ? numJNIFields : UNAVAILABLE_METRIC));
         if (numJNIClasses >= 0) {
-            l().a(classesFieldsMethodFormat, numJNIClasses, numJNIFields, numJNIMethods)
+            l().a(typesFieldsMethodFormat, numJNIClasses, numJNIFields, numJNIMethods)
                             .doclink("registered for JNI access", "#glossary-jni-access-registrations").println();
         }
         int numLibraries = libraries.size();
@@ -382,55 +408,23 @@ public class ProgressReporter {
     }
 
     public ReporterClosable printUniverse() {
-        Timer timer = getTimer(TimerCollection.Registry.UNIVERSE);
-        timer.start();
-        stagePrinter.start(BuildStage.UNIVERSE);
-        return new ReporterClosable() {
-            @Override
-            public void closeAction() {
-                timer.stop();
-                stagePrinter.end(timer);
-            }
-        };
+        return print(TimerCollection.Registry.UNIVERSE, BuildStage.UNIVERSE);
     }
 
     public ReporterClosable printParsing() {
-        Timer timer = getTimer(TimerCollection.Registry.PARSE);
-        timer.start();
-        stagePrinter.start(BuildStage.PARSING);
-        return new ReporterClosable() {
-            @Override
-            public void closeAction() {
-                timer.stop();
-                stagePrinter.end(timer);
-            }
-        };
+        return print(TimerCollection.Registry.PARSE, BuildStage.PARSING);
     }
 
     public ReporterClosable printInlining() {
-        Timer timer = getTimer(TimerCollection.Registry.INLINE);
-        timer.start();
-        stagePrinter.start(BuildStage.INLINING);
-        return new ReporterClosable() {
-            @Override
-            public void closeAction() {
-                timer.stop();
-                stagePrinter.end(timer);
-            }
-        };
+        return print(TimerCollection.Registry.INLINE, BuildStage.INLINING);
     }
 
     public ReporterClosable printCompiling() {
-        Timer timer = getTimer(TimerCollection.Registry.COMPILE);
-        timer.start();
-        stagePrinter.start(BuildStage.COMPILING);
-        return new ReporterClosable() {
-            @Override
-            public void closeAction() {
-                timer.stop();
-                stagePrinter.end(timer);
-            }
-        };
+        return print(TimerCollection.Registry.COMPILE, BuildStage.COMPILING);
+    }
+
+    public ReporterClosable printLayouting() {
+        return print(TimerCollection.Registry.LAYOUT, BuildStage.LAYOUTING);
     }
 
     // TODO: merge printCreationStart and printCreationEnd at some point (GR-35721).
@@ -442,37 +436,38 @@ public class ProgressReporter {
         this.debugInfoTimer = timer;
     }
 
-    public void printCreationEnd(int imageSize, int numHeapObjects, long imageHeapSize, int codeAreaSize,
+    public void printCreationEnd(int imageFileSize, int numHeapObjects, long imageHeapSize, int codeAreaSize,
                     int numCompilations, int debugInfoSize) {
+        recordJsonMetric(ImageDetailKey.IMAGE_HEAP_OBJECT_COUNT, numHeapObjects);
         Timer imageTimer = getTimer(TimerCollection.Registry.IMAGE);
         Timer writeTimer = getTimer(TimerCollection.Registry.WRITE);
         stagePrinter.end(imageTimer.getTotalTime() + writeTimer.getTotalTime());
         creationStageEndCompleted = true;
         String format = "%9s (%5.2f%%) for ";
-        l().a(format, Utils.bytesToHuman(codeAreaSize), codeAreaSize / (double) imageSize * 100)
+        l().a(format, Utils.bytesToHuman(codeAreaSize), codeAreaSize / (double) imageFileSize * 100)
                         .doclink("code area", "#glossary-code-area").a(":%,10d compilation units", numCompilations).println();
         EconomicMap<Pair<String, String>, ResourceStorageEntry> resources = Resources.singleton().resources();
         int numResources = resources.size();
         recordJsonMetric(ImageDetailKey.IMAGE_HEAP_RESOURCE_COUNT, numResources);
-        l().a(format, Utils.bytesToHuman(imageHeapSize), imageHeapSize / (double) imageSize * 100)
+        l().a(format, Utils.bytesToHuman(imageHeapSize), imageHeapSize / (double) imageFileSize * 100)
                         .doclink("image heap", "#glossary-image-heap").a(":%,9d objects and %,d resources", numHeapObjects, numResources).println();
         if (debugInfoSize > 0) {
             recordJsonMetric(ImageDetailKey.DEBUG_INFO_SIZE, debugInfoSize); // Optional metric
-            DirectPrinter l = l().a(format, Utils.bytesToHuman(debugInfoSize), debugInfoSize / (double) imageSize * 100)
+            DirectPrinter l = l().a(format, Utils.bytesToHuman(debugInfoSize), debugInfoSize / (double) imageFileSize * 100)
                             .doclink("debug info", "#glossary-debug-info");
             if (debugInfoTimer != null) {
                 l.a(" generated in %.1fs", Utils.millisToSeconds(debugInfoTimer.getTotalTime()));
             }
             l.println();
         }
-        long otherBytes = imageSize - codeAreaSize - imageHeapSize - debugInfoSize;
+        long otherBytes = imageFileSize - codeAreaSize - imageHeapSize - debugInfoSize;
         recordJsonMetric(ImageDetailKey.IMAGE_HEAP_SIZE, imageHeapSize);
-        recordJsonMetric(ImageDetailKey.TOTAL_SIZE, imageSize);
+        recordJsonMetric(ImageDetailKey.TOTAL_SIZE, imageFileSize);
         recordJsonMetric(ImageDetailKey.CODE_AREA_SIZE, codeAreaSize);
         recordJsonMetric(ImageDetailKey.NUM_COMP_UNITS, numCompilations);
-        l().a(format, Utils.bytesToHuman(otherBytes), otherBytes / (double) imageSize * 100)
+        l().a(format, Utils.bytesToHuman(otherBytes), otherBytes / (double) imageFileSize * 100)
                         .doclink("other data", "#glossary-other-data").println();
-        l().a("%9s in total", Utils.bytesToHuman(imageSize)).println();
+        l().a("%9s in total", Utils.bytesToHuman(imageFileSize)).println();
         printBreakdowns();
     }
 
@@ -482,12 +477,12 @@ public class ProgressReporter {
         }
     }
 
-    public void createBreakdowns(Collection<CompileTask> compilationTasks, Collection<ObjectInfo> heapObjects) {
+    public void createBreakdowns(HostedMetaAccess metaAccess, Collection<CompileTask> compilationTasks, Collection<ObjectInfo> heapObjects) {
         if (!SubstrateOptions.BuildOutputBreakdowns.getValue()) {
             return;
         }
         calculateCodeBreakdown(compilationTasks);
-        calculateHeapBreakdown(heapObjects);
+        calculateHeapBreakdown(metaAccess, heapObjects);
     }
 
     private void calculateCodeBreakdown(Collection<CompileTask> compilationTasks) {
@@ -501,13 +496,13 @@ public class ProgressReporter {
         }
     }
 
-    private void calculateHeapBreakdown(Collection<ObjectInfo> heapObjects) {
+    private void calculateHeapBreakdown(HostedMetaAccess metaAccess, Collection<ObjectInfo> heapObjects) {
         long stringByteLength = 0;
         for (ObjectInfo o : heapObjects) {
             heapBreakdown.merge(o.getClazz().toJavaName(true), o.getSize(), Long::sum);
-            Object javaObject = o.getObject();
-            if (reportStringBytes && javaObject instanceof String) {
-                stringByteLength += Utils.getInternalByteArrayLength((String) javaObject);
+            JavaConstant javaObject = o.getConstant();
+            if (reportStringBytes && metaAccess.isInstanceOf(javaObject, String.class)) {
+                stringByteLength += Utils.getInternalByteArrayLength((String) SubstrateObjectConstant.asObject(javaObject));
             }
         }
 
@@ -603,31 +598,82 @@ public class ProgressReporter {
                         .a(String.format("%9s for %s more object types", Utils.bytesToHuman(totalHeapBytes - printedHeapBytes), numHeapItems - printedHeapItems)).flushln();
     }
 
-    public void printEpilog(String imageName, NativeImageGenerator generator, boolean wasSuccessfulBuild, OptionValues parsedHostedOptions) {
+    public void printEpilog(String imageName, NativeImageGenerator generator, FeatureHandler featureHandler, ImageClassLoader classLoader, Throwable error, OptionValues parsedHostedOptions) {
+        executor.shutdown();
+
+        if (error != null) {
+            Path errorReportPath = NativeImageOptions.getErrorFilePath();
+            ReportUtils.report("GraalVM Native Image Error Report", errorReportPath, p -> VMErrorReporter.generateErrorReport(p, buildOutputLog, classLoader, featureHandler, error), false);
+            BuildArtifacts.singleton().add(ArtifactType.BUILD_INFO, errorReportPath);
+        }
+
+        if (imageName == null || generator == null) {
+            printErrorMessage(error);
+            return;
+        }
+
         l().printLineSeparator();
         printResourceStatistics();
 
-        Map<ArtifactType, List<Path>> artifacts = generator.getBuildArtifacts();
-        if (!artifacts.isEmpty()) {
-            l().printLineSeparator();
-            printArtifacts(imageName, generator, parsedHostedOptions, artifacts, wasSuccessfulBuild);
-        }
+        double totalSeconds = Utils.millisToSeconds(getTimer(TimerCollection.Registry.TOTAL).getTotalTime());
+        recordJsonMetric(ResourceUsageKey.TOTAL_SECS, totalSeconds);
+
+        createAdditionalArtifacts(imageName, generator, error, parsedHostedOptions);
+        printArtifacts(generator.getBuildArtifacts());
 
         l().printHeadlineSeparator();
 
-        double totalSeconds = Utils.millisToSeconds(getTimer(TimerCollection.Registry.TOTAL).getTotalTime());
         String timeStats;
         if (totalSeconds < 60) {
             timeStats = String.format("%.1fs", totalSeconds);
         } else {
             timeStats = String.format("%dm %ds", (int) totalSeconds / 60, (int) totalSeconds % 60);
         }
-        l().a(wasSuccessfulBuild ? "Finished" : "Failed").a(" generating '").bold().a(imageName).reset().a("' ")
-                        .a(wasSuccessfulBuild ? "in" : "after").a(" ").a(timeStats).a(".").println();
-        executor.shutdown();
+        l().a(error == null ? "Finished" : "Failed").a(" generating '").bold().a(imageName).reset().a("' ")
+                        .a(error == null ? "in" : "after").a(" ").a(timeStats).a(".").println();
+
+        printErrorMessage(error);
     }
 
-    private void printArtifacts(String imageName, NativeImageGenerator generator, OptionValues parsedHostedOptions, Map<ArtifactType, List<Path>> artifacts, boolean wasSuccessfulBuild) {
+    private void printErrorMessage(Throwable error) {
+        if (error == null) {
+            return;
+        }
+        l().println();
+        l().redBold().a("The build process encountered an unexpected error:").reset().println();
+        if (NativeImageOptions.ReportExceptionStackTraces.getValue()) {
+            l().dim().println();
+            error.printStackTrace(builderIO.getOut());
+            l().reset().println();
+        } else {
+            l().println();
+            l().dim().a("> %s", error).reset().println();
+            l().println();
+            l().a("Please inspect the generated error report at:").println();
+            l().link(NativeImageOptions.getErrorFilePath()).println();
+            l().println();
+            l().a("If you are unable to resolve this problem, please file an issue with the error report at:").println();
+            var supportURL = ImageSingletons.lookup(VM.class).supportURL;
+            l().link(supportURL, supportURL).println();
+        }
+    }
+
+    private void createAdditionalArtifacts(String imageName, NativeImageGenerator generator, Throwable error, OptionValues parsedHostedOptions) {
+        BuildArtifacts artifacts = BuildArtifacts.singleton();
+        if (error == null && jsonHelper != null) {
+            artifacts.add(ArtifactType.BUILD_INFO, jsonHelper.printToFile());
+        }
+        if (generator.getBigbang() != null && ImageBuildStatistics.Options.CollectImageBuildStatistics.getValue(parsedHostedOptions)) {
+            artifacts.add(ArtifactType.BUILD_INFO, reportImageBuildStatistics(imageName, generator.getBigbang()));
+        }
+        BuildArtifactsExporter.run(imageName, artifacts, generator.getBuildArtifacts());
+    }
+
+    private void printArtifacts(Map<ArtifactType, List<Path>> artifacts) {
+        if (artifacts.isEmpty()) {
+            return;
+        }
+        l().printLineSeparator();
         l().yellowBold().a("Produced artifacts:").reset().println();
         // Use TreeMap to sort paths alphabetically.
         Map<Path, List<String>> pathToTypes = new TreeMap<>();
@@ -636,15 +682,6 @@ public class ProgressReporter {
                 pathToTypes.computeIfAbsent(path, p -> new ArrayList<>()).add(artifactType.name().toLowerCase());
             }
         });
-        if (jsonHelper != null && wasSuccessfulBuild) {
-            Path jsonMetric = jsonHelper.printToFile();
-            pathToTypes.computeIfAbsent(jsonMetric, p -> new ArrayList<>()).add("json");
-        }
-        if (generator.getBigbang() != null && ImageBuildStatistics.Options.CollectImageBuildStatistics.getValue(parsedHostedOptions)) {
-            Path buildStatisticsPath = reportImageBuildStatistics(imageName, generator.getBigbang());
-            pathToTypes.computeIfAbsent(buildStatisticsPath, p -> new ArrayList<>()).add("raw");
-        }
-        pathToTypes.computeIfAbsent(reportBuildArtifacts(imageName, artifacts), p -> new ArrayList<>()).add("txt");
         pathToTypes.forEach((path, typeNames) -> {
             l().a(" ").link(path).dim().a(" (").a(String.join(", ", typeNames)).a(")").reset().println();
         });
@@ -661,22 +698,6 @@ public class ProgressReporter {
             String path = SubstrateOptions.Path.getValue() + File.separatorChar + "reports";
             return ReportUtils.report(description, path, name, "json", statsReporter, false);
         }
-    }
-
-    private static Path reportBuildArtifacts(String imageName, Map<ArtifactType, List<Path>> buildArtifacts) {
-        Path buildDir = NativeImageGenerator.generatedFiles(HostedOptionValues.singleton());
-
-        Consumer<PrintWriter> writerConsumer = writer -> buildArtifacts.forEach((artifactType, paths) -> {
-            writer.println("[" + artifactType + "]");
-            if (artifactType == BuildArtifacts.ArtifactType.JDK_LIB_SHIM) {
-                writer.println("# Note that shim JDK libraries depend on this");
-                writer.println("# particular native image (including its name)");
-                writer.println("# and therefore cannot be used with others.");
-            }
-            paths.stream().map(Path::toAbsolutePath).map(buildDir::relativize).forEach(writer::println);
-            writer.println();
-        });
-        return ReportUtils.report("build artifacts", buildDir.resolve(imageName + ".build_artifacts.txt"), writerConsumer, false);
     }
 
     private void printResourceStatistics() {
@@ -876,14 +897,17 @@ public class ProgressReporter {
 
     private void print(char text) {
         builderIO.getOut().print(text);
+        buildOutputLog.append(text);
     }
 
     private void print(String text) {
         builderIO.getOut().print(text);
+        buildOutputLog.append(text);
     }
 
     private void println() {
         builderIO.getOut().println();
+        buildOutputLog.append(System.lineSeparator());
     }
 
     /*
@@ -1380,16 +1404,18 @@ public class ProgressReporter {
         }
     }
 
-    private static class ANSI {
+    public static class ANSI {
         static final String ESCAPE = "\033";
         static final String RESET = ESCAPE + "[0m";
         static final String BOLD = ESCAPE + "[1m";
         static final String DIM = ESCAPE + "[2m";
+        static final String STRIP_COLORS = "\033\\[[;\\d]*m";
 
         static final String LINK_START = ESCAPE + "]8;;";
         static final String LINK_TEXT = ESCAPE + "\\";
         static final String LINK_END = LINK_START + LINK_TEXT;
         static final String LINK_FORMAT = LINK_START + "%s" + LINK_TEXT + "%s" + LINK_END;
+        static final String STRIP_LINKS = "\033]8;;https://\\S+\033\\\\([^\033]*)\033]8;;\033\\\\";
 
         static final String BLUE = ESCAPE + "[0;34m";
 
@@ -1397,6 +1423,11 @@ public class ProgressReporter {
         static final String YELLOW_BOLD = ESCAPE + "[1;33m";
         static final String BLUE_BOLD = ESCAPE + "[1;34m";
         static final String MAGENTA_BOLD = ESCAPE + "[1;35m";
+
+        /* Strip all ANSI codes emitted by this class. */
+        public static String strip(String string) {
+            return string.replaceAll(STRIP_COLORS, "").replaceAll(STRIP_LINKS, "$1");
+        }
     }
 }
 

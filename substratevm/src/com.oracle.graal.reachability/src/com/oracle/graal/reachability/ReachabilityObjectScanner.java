@@ -30,6 +30,7 @@ import com.oracle.graal.pointsto.ObjectScanningObserver;
 import com.oracle.graal.pointsto.meta.AnalysisField;
 import com.oracle.graal.pointsto.meta.AnalysisMetaAccess;
 import com.oracle.graal.pointsto.meta.AnalysisType;
+
 import jdk.vm.ci.meta.JavaConstant;
 
 /**
@@ -50,7 +51,7 @@ public class ReachabilityObjectScanner implements ObjectScanningObserver {
     @Override
     public boolean forRelocatedPointerFieldValue(JavaConstant receiver, AnalysisField field, JavaConstant fieldValue, ObjectScanner.ScanReason reason) {
         if (!field.isWritten()) {
-            return field.registerAsWritten(null);
+            return field.registerAsWritten(reason);
         }
         return false;
     }
@@ -59,49 +60,44 @@ public class ReachabilityObjectScanner implements ObjectScanningObserver {
     public boolean forNullFieldValue(JavaConstant receiver, AnalysisField field, ObjectScanner.ScanReason reason) {
         boolean modified = false;
         if (receiver != null) {
-            modified = bb.markTypeReachable(constantType(receiver));
+            modified = bb.registerTypeAsReachable(constantType(receiver), reason);
         }
-        return modified || bb.markTypeReachable(field.getType());
+        return modified || bb.registerTypeAsReachable(field.getType(), reason);
     }
 
     @Override
     public boolean forNonNullFieldValue(JavaConstant receiver, AnalysisField field, JavaConstant fieldValue, ObjectScanner.ScanReason reason) {
         boolean modified = false;
         if (receiver != null) {
-            bb.markTypeInHeap(constantType(receiver));
-            modified = bb.markTypeReachable(constantType(receiver));
+            bb.registerTypeAsInHeap(constantType(receiver), reason);
+            modified = bb.registerTypeAsReachable(constantType(receiver), reason);
         }
-        return modified || bb.markTypeReachable(field.getType());
+        return modified || bb.registerTypeAsReachable(field.getType(), reason);
     }
 
     @Override
     public boolean forNullArrayElement(JavaConstant array, AnalysisType arrayType, int elementIndex, ObjectScanner.ScanReason reason) {
-        return bb.markTypeReachable(arrayType);
+        return bb.registerTypeAsReachable(arrayType, reason);
     }
 
     @Override
     public boolean forNonNullArrayElement(JavaConstant array, AnalysisType arrayType, JavaConstant elementConstant, AnalysisType elementType, int elementIndex, ObjectScanner.ScanReason reason) {
-        return bb.markTypeReachable(arrayType) || bb.markTypeInHeap(elementType);
+        return bb.registerTypeAsReachable(arrayType, reason) || bb.registerTypeAsInHeap(elementType, reason);
     }
 
     @Override
     public void forEmbeddedRoot(JavaConstant root, ObjectScanner.ScanReason reason) {
-        bb.markTypeReachable(constantType(root));
-        bb.markTypeInHeap(constantType(root));
+        bb.registerTypeAsReachable(constantType(root), reason);
+        bb.registerTypeAsInHeap(constantType(root), reason);
     }
 
     @Override
     public void forScannedConstant(JavaConstant scannedValue, ObjectScanner.ScanReason reason) {
         AnalysisType type = constantType(scannedValue);
-        bb.markTypeInHeap(type);
+        bb.registerTypeAsInHeap(type, reason);
     }
 
     private AnalysisType constantType(JavaConstant constant) {
-        return access.lookupJavaType(constantAsObject(constant).getClass());
+        return access.lookupJavaType(constant);
     }
-
-    private Object constantAsObject(JavaConstant constant) {
-        return bb.getSnippetReflectionProvider().asObject(Object.class, constant);
-    }
-
 }

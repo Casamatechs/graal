@@ -34,6 +34,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Objects;
@@ -69,7 +70,6 @@ import com.oracle.svm.core.graal.code.SubstrateBackend.SubstrateMarkId;
 import com.oracle.svm.core.heap.Heap;
 import com.oracle.svm.core.heap.ObjectHeader;
 import com.oracle.svm.core.image.ImageHeapPartition;
-import com.oracle.svm.core.meta.SubstrateObjectConstant;
 import com.oracle.svm.hosted.annotation.CustomSubstitutionType;
 import com.oracle.svm.hosted.image.NativeImageHeap.ObjectInfo;
 import com.oracle.svm.hosted.image.sources.SourceManager;
@@ -109,7 +109,6 @@ import jdk.vm.ci.meta.ResolvedJavaMethod;
 import jdk.vm.ci.meta.ResolvedJavaType;
 import jdk.vm.ci.meta.Signature;
 import jdk.vm.ci.meta.Value;
-import java.util.HashMap;
 
 /**
  * Implementation of the DebugInfoProvider API interface that allows type, code and heap data info
@@ -248,12 +247,9 @@ class NativeImageDebugInfoProvider implements DebugInfoProvider {
      */
     public long objectOffset(JavaConstant constant) {
         assert constant.getJavaKind() == JavaKind.Object && !constant.isNull() : "invalid constant for object offset lookup";
-        if (constant instanceof SubstrateObjectConstant) {
-            Object object = SubstrateObjectConstant.asObject(constant);
-            ObjectInfo objectInfo = heap.getObjectInfo(object);
-            if (objectInfo != null) {
-                return objectInfo.getAddress();
-            }
+        ObjectInfo objectInfo = heap.getConstantInfo(constant);
+        if (objectInfo != null) {
+            return objectInfo.getAddress();
         }
         return -1;
     }
@@ -481,6 +477,15 @@ class NativeImageDebugInfoProvider implements DebugInfoProvider {
         }
 
         @Override
+        public long classOffset() {
+            ObjectInfo objectInfo = heap.getObjectInfo(hostedType.getHub());
+            if (objectInfo != null) {
+                return objectInfo.getOffset();
+            }
+            return -1;
+        }
+
+        @Override
         public int size() {
             if (hostedType instanceof HostedInstanceClass) {
                 /* We know the actual instance size in bytes. */
@@ -555,6 +560,11 @@ class NativeImageDebugInfoProvider implements DebugInfoProvider {
         @Override
         public Path cachePath() {
             return null;
+        }
+
+        @Override
+        public long classOffset() {
+            return -1;
         }
 
         @Override
@@ -1085,7 +1095,7 @@ class NativeImageDebugInfoProvider implements DebugInfoProvider {
             if (method instanceof HostedMethod) {
                 return ((HostedMethod) method).isDeoptTarget();
             }
-            return name().endsWith(HostedMethod.METHOD_NAME_DEOPT_SUFFIX);
+            return name().endsWith(HostedMethod.MULTI_METHOD_KEY_SEPARATOR);
         }
 
         @Override
@@ -1869,7 +1879,7 @@ class NativeImageDebugInfoProvider implements DebugInfoProvider {
             if (localInfoList != null) {
                 return localInfoList.toArray(new DebugLocalValueInfo[localInfoList.size()]);
             } else {
-                return new DebugLocalValueInfo[0];
+                return EMPTY_LOCAL_VALUE_INFOS;
             }
         }
 
@@ -1937,6 +1947,8 @@ class NativeImageDebugInfoProvider implements DebugInfoProvider {
         }
 
     }
+
+    private static final DebugLocalValueInfo[] EMPTY_LOCAL_VALUE_INFOS = new DebugLocalValueInfo[0];
 
     static final Register[] AARCH64_GPREG = {
                     AArch64.r0,

@@ -24,10 +24,10 @@
  */
 package com.oracle.graal.reachability;
 
+import com.oracle.graal.pointsto.AbstractAnalysisEngine;
 import com.oracle.graal.pointsto.meta.AnalysisField;
 import com.oracle.graal.pointsto.meta.AnalysisMethod;
 import com.oracle.graal.pointsto.meta.AnalysisType;
-import com.oracle.svm.util.GuardedAnnotationAccess;
 import jdk.vm.ci.meta.JavaConstant;
 import jdk.vm.ci.meta.ResolvedJavaMethod;
 import jdk.vm.ci.meta.ResolvedJavaType;
@@ -52,6 +52,7 @@ import org.graalvm.compiler.nodes.virtual.VirtualInstanceNode;
 import org.graalvm.compiler.replacements.nodes.BinaryMathIntrinsicNode;
 import org.graalvm.compiler.replacements.nodes.MacroInvokable;
 import org.graalvm.compiler.replacements.nodes.UnaryMathIntrinsicNode;
+import org.graalvm.nativeimage.AnnotationAccess;
 
 import java.lang.reflect.Modifier;
 import java.util.Optional;
@@ -139,11 +140,11 @@ public class SimpleInMemoryMethodSummaryProvider implements MethodSummaryProvide
                 Invoke node = (Invoke) n;
                 CallTargetNode.InvokeKind kind = node.getInvokeKind();
                 ReachabilityAnalysisMethod targetMethod = (ReachabilityAnalysisMethod) node.getTargetMethod();
-                if (targetMethod == null || GuardedAnnotationAccess.isAnnotationPresent(targetMethod, Node.NodeIntrinsic.class)) {
+                if (targetMethod == null || AnnotationAccess.isAnnotationPresent(targetMethod, Node.NodeIntrinsic.class)) {
                     continue;
                 }
                 if (method != null) {
-                    method.addInvoke(new ReachabilityInvokeInfo(targetMethod, ReachabilityAnalysisMethod.sourcePosition(node, method), kind.isDirect()));
+                    method.addInvoke(new ReachabilityInvokeInfo(targetMethod, AbstractAnalysisEngine.sourcePosition(node.asNode()), kind.isDirect()));
                 }
                 if (kind.isDirect()) {
                     implementationInvokedMethods.add(targetMethod);

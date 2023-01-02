@@ -68,6 +68,7 @@ import org.graalvm.compiler.options.OptionValues;
 import org.graalvm.compiler.phases.BasePhase;
 import org.graalvm.compiler.phases.OptimisticOptimizations;
 import org.graalvm.compiler.phases.PhaseSuite;
+import org.graalvm.compiler.phases.Speculative;
 import org.graalvm.compiler.phases.common.AbstractInliningPhase;
 import org.graalvm.compiler.phases.tiers.CompilerConfiguration;
 import org.graalvm.compiler.phases.tiers.HighTierContext;
@@ -335,9 +336,9 @@ public final class HotSpotTruffleCompilerImpl extends TruffleCompilerImpl implem
     }
 
     private static void removeSpeculativePhases(Suites suites) {
-        suites.getHighTier().removeSpeculativePhases();
-        suites.getMidTier().removeSpeculativePhases();
-        suites.getLowTier().removeSpeculativePhases();
+        suites.getHighTier().removeSubTypePhases(Speculative.class);
+        suites.getMidTier().removeSubTypePhases(Speculative.class);
+        suites.getLowTier().removeSubTypePhases(Speculative.class);
     }
 
     @Override
@@ -348,7 +349,7 @@ public final class HotSpotTruffleCompilerImpl extends TruffleCompilerImpl implem
     @Override
     protected void exitHostVM(int status) {
         HotSpotJVMCIRuntime runtime = HotSpotJVMCIRuntime.runtime();
-        HotSpotGraalServices.exit(-1, runtime);
+        HotSpotGraalServices.exit(status, runtime);
     }
 
     @Override

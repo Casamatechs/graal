@@ -45,9 +45,11 @@ import org.graalvm.compiler.nodes.UnreachableBeginNode;
 import org.graalvm.compiler.nodes.UnwindNode;
 import org.graalvm.compiler.nodes.ValueNode;
 import org.graalvm.compiler.nodes.java.ExceptionObjectNode;
+import org.graalvm.nativeimage.AnnotationAccess;
 
 import com.oracle.graal.pointsto.infrastructure.SubstitutionProcessor;
 import com.oracle.graal.pointsto.meta.HostedProviders;
+import com.oracle.svm.common.meta.MultiMethod;
 import com.oracle.svm.core.deopt.DeoptTest;
 import com.oracle.svm.core.graal.nodes.DeoptEntryBeginNode;
 import com.oracle.svm.core.graal.nodes.DeoptEntryNode;
@@ -62,7 +64,6 @@ import com.oracle.svm.hosted.code.CompilationInfo;
 import com.oracle.svm.hosted.meta.HostedMethod;
 import com.oracle.svm.hosted.nodes.DeoptProxyNode;
 import com.oracle.svm.hosted.phases.HostedGraphKit;
-import com.oracle.svm.util.GuardedAnnotationAccess;
 
 import jdk.vm.ci.meta.JavaKind;
 import jdk.vm.ci.meta.ResolvedJavaField;
@@ -74,7 +75,7 @@ final class PodFactorySubstitutionProcessor extends SubstitutionProcessor {
 
     @Override
     public ResolvedJavaMethod lookup(ResolvedJavaMethod method) {
-        if (method.isSynthetic() && GuardedAnnotationAccess.isAnnotationPresent(method.getDeclaringClass(), PodFactory.class) && !method.isConstructor()) {
+        if (method.isSynthetic() && AnnotationAccess.isAnnotationPresent(method.getDeclaringClass(), PodFactory.class) && !method.isConstructor()) {
             assert !(method instanceof CustomSubstitutionMethod);
             return substitutions.computeIfAbsent(method, PodFactorySubstitutionMethod::new);
         }
@@ -113,8 +114,10 @@ final class PodFactorySubstitutionMethod extends CustomSubstitutionMethod {
 
         HostedGraphKit kit = new HostedGraphKit(debug, providers, method, trackNodeSourcePosition);
         CompilationInfo deoptTargetInfo = null;
-        if ((method instanceof HostedMethod) && ((HostedMethod) method).isDeoptTarget()) {
-            deoptTargetInfo = ((HostedMethod) method).compilationInfo;
+        if (MultiMethod.isDeoptTarget(method)) {
+            if (method instanceof HostedMethod) {
+                deoptTargetInfo = ((HostedMethod) method).compilationInfo;
+            }
         }
 
         ResolvedJavaType factoryType = method.getDeclaringClass();

@@ -427,7 +427,7 @@ public abstract class PartialEvaluator {
         assert !allowAssumptionsDuringParsing || !persistentEncodedGraphCache;
         return new CachingPEGraphDecoder(config.architecture(), context.graph, compilationUnitProviders, newConfig, TruffleCompilerImpl.Optimizations,
                         loopExplosionPlugin, decodingPlugins, inlineInvokePlugins, parameterPlugin, nodePluginList, callInlined,
-                        sourceLanguagePositionProvider, postParsingPhase, graphCache, createCachedGraphScope, allowAssumptionsDuringParsing, false);
+                        sourceLanguagePositionProvider, postParsingPhase, graphCache, createCachedGraphScope, allowAssumptionsDuringParsing, false, true);
     }
 
     @SuppressWarnings("try")
@@ -479,13 +479,6 @@ public abstract class PartialEvaluator {
             ResolvedJavaType memorySegmentProxyType = TruffleCompilerRuntime.getRuntime().resolveType(config.lastTier().providers().getMetaAccess(), "jdk.internal.access.foreign.MemorySegmentProxy");
             for (ResolvedJavaMethod m : memorySegmentProxyType.getDeclaredMethods()) {
                 if (m.getName().equals("scope")) {
-                    appendMemorySegmentScopePlugin(plugins, m);
-                }
-            }
-        } else if (JavaVersionUtil.JAVA_SPEC >= 19) {
-            ResolvedJavaType memorySegmentType = TruffleCompilerRuntime.getRuntime().resolveType(config.lastTier().providers().getMetaAccess(), "jdk.internal.foreign.Scoped");
-            for (ResolvedJavaMethod m : memorySegmentType.getDeclaredMethods()) {
-                if (m.getName().equals("sessionImpl")) {
                     appendMemorySegmentScopePlugin(plugins, m);
                 }
             }

@@ -47,6 +47,7 @@ import com.oracle.graal.pointsto.BigBang;
 import com.oracle.graal.pointsto.api.HostVM;
 import com.oracle.graal.pointsto.constraints.UnsupportedFeatureException;
 import com.oracle.graal.pointsto.heap.HeapSnapshotVerifier;
+import com.oracle.graal.pointsto.heap.ImageHeapConstant;
 import com.oracle.graal.pointsto.heap.ImageHeapScanner;
 import com.oracle.graal.pointsto.infrastructure.AnalysisConstantPool;
 import com.oracle.graal.pointsto.infrastructure.SubstitutionProcessor;
@@ -365,7 +366,7 @@ public class AnalysisUniverse implements Universe {
              * it during constant folding.
              */
             AnalysisType declaringType = lookup(field.getDeclaringClass());
-            declaringType.registerAsReachable();
+            declaringType.registerAsReachable(field);
             declaringType.ensureInitialized();
 
             /*
@@ -497,7 +498,18 @@ public class AnalysisUniverse implements Universe {
         if (constant == null) {
             return null;
         } else if (constant.getJavaKind().isObject() && !constant.isNull()) {
-            return snippetReflection.forObject(originalSnippetReflection.asObject(Object.class, constant));
+            Object original = originalSnippetReflection.asObject(Object.class, constant);
+            if (original instanceof ImageHeapConstant) {
+                /*
+                 * The value is an ImageHeapObject, i.e., it already has a build time
+                 * representation, so there is no need to re-wrap it. The value likely comes from
+                 * reading a field of a normal object that is referencing a simulated object. The
+                 * originalConstantReflection provider is not aware of simulated constants, and it
+                 * always wraps them into a HotSpotObjectConstant when reading fields.
+                 */
+                return (JavaConstant) original;
+            }
+            return snippetReflection.forObject(original);
         } else {
             return constant;
         }
@@ -527,8 +539,16 @@ public class AnalysisUniverse implements Universe {
         return fields.values();
     }
 
+    public AnalysisField getField(ResolvedJavaField resolvedJavaField) {
+        return fields.get(resolvedJavaField);
+    }
+
     public Collection<AnalysisMethod> getMethods() {
         return methods.values();
+    }
+
+    public AnalysisMethod getMethod(ResolvedJavaMethod resolvedJavaMethod) {
+        return methods.get(resolvedJavaMethod);
     }
 
     public Map<JavaConstant, BytecodePosition> getEmbeddedRoots() {

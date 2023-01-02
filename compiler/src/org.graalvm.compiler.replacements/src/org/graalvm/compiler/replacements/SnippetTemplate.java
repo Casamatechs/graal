@@ -69,6 +69,7 @@ import org.graalvm.compiler.debug.Assertions;
 import org.graalvm.compiler.debug.CounterKey;
 import org.graalvm.compiler.debug.DebugCloseable;
 import org.graalvm.compiler.debug.DebugContext;
+import org.graalvm.compiler.debug.DebugOptions;
 import org.graalvm.compiler.debug.GraalError;
 import org.graalvm.compiler.debug.TimerKey;
 import org.graalvm.compiler.graph.Graph.Mark;
@@ -945,7 +946,8 @@ public class SnippetTemplate {
                                     DebugContext.Scope s = debug.scope("SnippetSpecialization", args.info.method)) {
                         SnippetTemplates.increment(outer);
                         args.info.creationCounter.increment(outer);
-                        OptionValues snippetOptions = new OptionValues(options, GraalOptions.TraceInlining, GraalOptions.TraceInliningForStubsAndSnippets.getValue(options));
+                        OptionValues snippetOptions = new OptionValues(options, GraalOptions.TraceInlining, GraalOptions.TraceInliningForStubsAndSnippets.getValue(options),
+                                        DebugOptions.OptimizationLog, null);
                         template = new SnippetTemplate(snippetOptions,
                                         debug,
                                         context,
@@ -1032,6 +1034,7 @@ public class SnippetTemplate {
         final StructuredGraph snippetCopy = new StructuredGraph.Builder(options, debug).name(snippetGraph.name).method(snippetGraph.method()).trackNodeSourcePosition(
                         snippetGraph.trackNodeSourcePosition()).setIsSubstitution(true).build();
         snippetCopy.getGraphState().setGuardsStage(snippetGraph.getGuardsStage());
+        snippetCopy.getGraphState().getStageFlags().addAll(snippetGraph.getGraphState().getStageFlags());
         assert !GraalOptions.TrackNodeSourcePosition.getValue(options) || snippetCopy.trackNodeSourcePosition();
         try (DebugContext.Scope scope = debug.scope("SpecializeSnippet", snippetCopy)) {
             if (!snippetGraph.isUnsafeAccessTrackingEnabled()) {
@@ -1215,7 +1218,10 @@ public class SnippetTemplate {
                 assert !guardsStage.allowsFloatingGuards() : guardsStage;
                 // only create memory map nodes if we need the memory graph
                 new FloatingReadPhase(true, canonicalizer).apply(snippetCopy, providers);
-                new GuardLoweringPhase().apply(snippetCopy, providers);
+                if (!snippetCopy.getGraphState().isExplicitExceptionsNoDeopt()) {
+                    new GuardLoweringPhase().apply(snippetCopy, providers);
+                }
+                assert snippetCopy.getGraphState().isAfterStage(StageFlag.GUARD_LOWERING);
                 new RemoveValueProxyPhase(canonicalizer).apply(snippetCopy, providers);
                 // (4)
                 try (DebugContext.Scope s = debug.scope("LoweringSnippetTemplate_MID_TIER", snippetCopy)) {
@@ -1951,8 +1957,8 @@ public class SnippetTemplate {
                         MemoryKill replacement = map.getLastLocationAccess(location);
                         if (replacement == null) {
                             assert mayRemoveLocation || LocationIdentity.any().equals(location) ||
-                                            CollectionsUtil.anyMatch(info.privateLocations, Predicate.isEqual(location)) : "Snippet " +
-                                                            info.method.format("%h.%n") + " contains access to the non-private location " +
+                                            CollectionsUtil.anyMatch(info.privateLocations, Predicate.isEqual(location)) : "Snippet " + info.method.format("%h.%n") +
+                                                            " contains access to the non-private location " +
                                                             location + ", but replacee doesn't access this location." + map.getLocations();
                         } else {
                             pos.set(usage, replacement.asNode());
